@@ -45,6 +45,10 @@ class Resolution:
     missing_dependencies: list[str] = field(default_factory=list)
     incompatibility_conflicts: list[str] = field(default_factory=list)
     load_order_conflicts: list[str] = field(default_factory=list)
+    # character ID -> mod that supplies that whole character
+    character_owners: dict[str, str] = field(default_factory=dict)
+    # mod ID -> characters it has but does not supply (excluded or outranked)
+    characters_withheld: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def blocking_issues(self) -> list[str]:
@@ -223,6 +227,8 @@ def resolve_profile(
                 )
             )
 
+    _apply_character_ownership(profile, enabled, records, claims, resolution)
+
     for relative, path_claims in claims.items():
         winner = path_claims[-1]
         resolution.winners[relative] = winner
@@ -363,3 +369,82 @@ def _deduplicate_profile(
         seen.add(mod_id)
         result.append(mod_id)
     return result
+
+
+def _apply_character_ownership(
+    profile: Profile,
+    enabled: list[str],
+    records: dict[str, ModRecord],
+    claims: dict[str, list[Claim]],
+    resolution: Resolution,
+) -> None:
+    """Give each character to exactly one mod, as a whole.
+
+    Mixing one character's files from two mods (mesh from one, textures from
+    another) is what produces broken shoulders and creases, so:
+
+    * a profile can exclude characters from a mod;
+    * of the mods that still touch a character, the highest-priority one
+      supplies all of that character's files and the others supply none;
+    * "fill gaps" mods rank below every normal mod, wherever they sit.
+
+    Files with no character ID (shared assets) and configurable mods keep the
+    normal per-file "later mod wins" rule, except that fill-gaps mods still
+    rank lowest.
+    """
+
+    fill = set(profile.fill_gaps)
+
+    def priority(mod_id: str) -> tuple[int, int]:
+        return (0 if mod_id in fill else 1, enabled.index(mod_id) if mod_id in enabled else -1)
+
+    def character(claim: Claim, target: str) -> str | None:
+        record = records.get(claim.mod_id)
+        if record is None or record.option_groups:
+            return None
+        return record.target_characters.get(target)
+
+    withheld: dict[str, set[str]] = {}
+
+    # 1. Exclusions.
+    for target, path_claims in claims.items():
+        kept = []
+        for claim in path_claims:
+            ch = character(claim, target)
+            if ch and ch in profile.excluded_characters.get(claim.mod_id, ()):
+                withheld.setdefault(claim.mod_id, set()).add(ch)
+                continue
+            kept.append(claim)
+        path_claims[:] = kept
+
+    # 2. One owner per character: the highest-priority mod that touches it.
+    owners: dict[str, str] = {}
+    for target, path_claims in claims.items():
+        for claim in path_claims:
+            ch = character(claim, target)
+            if not ch:
+                continue
+            current = owners.get(ch)
+            if current is None or priority(claim.mod_id) > priority(current):
+                owners[ch] = claim.mod_id
+
+    # 3. Drop every other mod's files for owned characters, then order the
+    #    remaining claims so the last one (the winner) has the highest priority.
+    for target in list(claims):
+        kept = []
+        for claim in claims[target]:
+            ch = character(claim, target)
+            if ch and owners.get(ch) != claim.mod_id:
+                withheld.setdefault(claim.mod_id, set()).add(ch)
+                continue
+            kept.append(claim)
+        kept.sort(key=lambda claim: priority(claim.mod_id))
+        if kept:
+            claims[target] = kept
+        else:
+            del claims[target]
+
+    resolution.character_owners = dict(sorted(owners.items()))
+    resolution.characters_withheld = {
+        mod_id: sorted(values) for mod_id, values in sorted(withheld.items())
+    }

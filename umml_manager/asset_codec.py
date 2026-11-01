@@ -54,6 +54,7 @@ class Resolution:
     sha256: str
     row: AssetRow | None
     reason: str  # "path", "audio-pair", "bundle-name", "not-in-metadata", "not-an-asset"
+    logical_name: str = ""  # bundle name used for the match, when it differs from the path
 
 
 class MetaIndex:
@@ -271,7 +272,8 @@ class AssetResolver:
             if name:
                 row = self.meta.lookup(name)
                 if row is not None:
-                    return Resolution(relative, digest, row, "bundle-name")
+                    return Resolution(relative, digest, row, "bundle-name", name)
+                return Resolution(relative, digest, None, "not-in-metadata", name)
         return Resolution(relative, digest, None, "not-in-metadata")
 
 

@@ -142,6 +142,11 @@ class ModRecord:
     # in this region yet).
     pending_targets: dict[str, str] = field(default_factory=dict)
     dormant_sources: list[str] = field(default_factory=list)
+    # game target -> 4-digit character ID, for live and pending targets, and
+    # source path -> character ID for dormant sources. Used for whole-character
+    # ownership between mods and the per-character picker.
+    target_characters: dict[str, str] = field(default_factory=dict)
+    dormant_characters: dict[str, str] = field(default_factory=dict)
     # Set when the source is referenced in place (for example on an external
     # drive) instead of being copied into the library's sources folder.
     origin: SourceOrigin | None = None
@@ -208,6 +213,14 @@ class ModRecord:
                 for key, value in _mapping(data.get("pending_targets", {})).items()
             },
             dormant_sources=_string_list(data.get("dormant_sources", [])),
+            target_characters={
+                str(key): str(value)
+                for key, value in _mapping(data.get("target_characters", {})).items()
+            },
+            dormant_characters={
+                str(key): str(value)
+                for key, value in _mapping(data.get("dormant_characters", {})).items()
+            },
             origin=SourceOrigin.from_dict(data.get("origin")),
         )
 
@@ -230,6 +243,11 @@ class Profile:
     region: str = ""
     installation_key: str = ""
     options: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # mod ID -> character IDs this profile leaves out of that mod.
+    excluded_characters: dict[str, list[str]] = field(default_factory=dict)
+    # Mods that only fill characters no other enabled mod covers, wherever
+    # they sit in the load order.
+    fill_gaps: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Profile":
@@ -248,6 +266,12 @@ class Profile:
             region=str(data.get("region", "")),
             installation_key=str(data.get("installation_key", "")),
             options=options,
+            excluded_characters={
+                str(key): _string_list(value)
+                for key, value in _mapping(data.get("excluded_characters", {})).items()
+                if _string_list(value)
+            },
+            fill_gaps=_string_list(data.get("fill_gaps", [])),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -257,6 +281,12 @@ class Profile:
             "region": self.region,
             "installation_key": self.installation_key,
             "options": {key: dict(value) for key, value in self.options.items()},
+            "excluded_characters": {
+                key: sorted(set(value))
+                for key, value in self.excluded_characters.items()
+                if value
+            },
+            "fill_gaps": list(self.fill_gaps),
         }
 
 

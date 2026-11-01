@@ -20,6 +20,7 @@ from .asset_codec import (
     target_for,
     write_or_link,
 )
+from .characters import character_of
 from .locking import FileLock, LockError
 from .models import PACKAGE_UMML_ASSETS, ModRecord
 from .options import OptionError, select_source_paths
@@ -36,6 +37,8 @@ class SourceIndex:
     source_roots: dict[str, str] = field(default_factory=dict)
     pending_targets: dict[str, str] = field(default_factory=dict)
     dormant_sources: list[str] = field(default_factory=list)
+    target_characters: dict[str, str] = field(default_factory=dict)
+    dormant_characters: dict[str, str] = field(default_factory=dict)
     missing: int = 0
 
 
@@ -50,10 +53,12 @@ class SourceEncoder:
         self.resolver = resolver
         self._names = names
         self.target_filter = None
+        self.last_logical_name = ""
 
     def encode(self, relative: str, source: Path) -> tuple[dict[str, bytes | None], int]:
         data = source.read_bytes()
         resolution = self.resolver.resolve(relative, source, data)
+        self.last_logical_name = resolution.logical_name
         if resolution.row is None:
             return {}, 1 if resolution.reason == "not-in-metadata" else 0
         target = target_for(resolution.row.hash_name)
@@ -184,6 +189,8 @@ class LegacyAssetAdapter:
                 source_roots=index.source_roots,
                 pending_targets=index.pending_targets,
                 dormant_sources=index.dormant_sources,
+                target_characters=index.target_characters,
+                dormant_characters=index.dormant_characters,
                 source_indexed_against=fingerprint,
                 prepared_against=fingerprint,
                 prepared_at=datetime.now(timezone.utc).isoformat(),
@@ -252,14 +259,21 @@ class LegacyAssetAdapter:
                     index.missing += 1
                     continue
                 index.missing += counted_missing
+                character = character_of(
+                    relative, getattr(encoder, "last_logical_name", "")
+                )
                 if not outputs:
                     if counted_missing:
                         index.dormant_sources.append(relative)
+                        if character:
+                            index.dormant_characters[relative] = character
                     continue
 
                 payload: dict[str, str] = {}
                 for target in sorted(outputs):
                     data = outputs[target]
+                    if character:
+                        index.target_characters[target] = character
                     if data is None:
                         index.pending_targets[target] = relative
                         continue

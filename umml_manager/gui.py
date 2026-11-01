@@ -396,6 +396,15 @@ class ManagerGUI(
             self.library.locate_source_button,
             enabled=record is not None and record.origin is not None and not busy,
         )
+        self._configure_button(
+            self.library.characters_button,
+            enabled=(
+                record is not None
+                and not record.option_groups
+                and bool(record.target_characters or record.dormant_characters)
+                and not busy
+            ),
+        )
 
         blockers = True
         try:

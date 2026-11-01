@@ -9,6 +9,7 @@ from .ui_mod_inspector import inspect_selected_mod
 from .ui_mod_options import configure_mod_options
 from .ui_package_builder import launch_package_builder
 from .ui_theme import SURFACE_2, TEXT
+from .ui_character_picker import pick_characters
 
 
 class _HiddenAction:
@@ -185,6 +186,13 @@ class LibraryPage(ttk.Frame):
             state="disabled",
         )
         self.configure_button.grid(row=0, column=3, sticky="ew", padx=(4, 0))
+        self.characters_button = ttk.Button(
+            profile_buttons,
+            text="Characters...",
+            command=lambda: pick_characters(app, self),
+            state="disabled",
+        )
+        self.characters_button.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         self.prepare_button = _HiddenAction()
 
         source_buttons = ttk.Frame(details, style="Surface.TFrame")

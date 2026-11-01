@@ -110,6 +110,7 @@ class ManagerButtonStateTests(unittest.TestCase):
                 "workspace_button",
                 "remove_button",
                 "locate_source_button",
+                "characters_button",
                 "apply_button",
             )
         }
@@ -174,6 +175,15 @@ class ManagerButtonStateTests(unittest.TestCase):
         self.assertEqual(app.library.workspace_button.options["state"], "disabled")
         self.assertEqual(app.library.remove_button.options["state"], "disabled")
         self.assertEqual(app.library.locate_source_button.options["state"], "disabled")
+        self.assertEqual(app.library.characters_button.options["state"], "disabled")
+
+    def test_characters_button_needs_character_data(self):
+        app, mod, _profile = self._app(selected=True)
+        app.refresh_action_states()
+        self.assertEqual(app.library.characters_button.options["state"], "disabled")
+        mod.target_characters = {"aa/hash": "1001"}
+        app.refresh_action_states()
+        self.assertEqual(app.library.characters_button.options["state"], "normal")
 
     def test_locate_source_only_for_referenced_mods(self):
         app, mod, _profile = self._app(selected=True)
