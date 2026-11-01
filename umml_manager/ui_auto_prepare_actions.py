@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .legacy_adapter import LegacyAssetAdapter
-from .models import PACKAGE_UMML_ASSETS, has_prepared_state
+from .models import ASSET_INDEX_VERSION, PACKAGE_UMML_ASSETS, has_prepared_state
 from .ui_maintenance_actions import MaintenanceActions
 
 
@@ -343,6 +343,12 @@ class AutoPrepareActions(MaintenanceActions):
         prepared_against = str(record.prepared_against or "").strip().casefold()
         indexed_against = str(record.source_indexed_against or "").strip().casefold()
         if not has_prepared_state(record):
+            return True
+        if (
+            not record.option_groups
+            and getattr(record, "asset_index_version", ASSET_INDEX_VERSION) < ASSET_INDEX_VERSION
+        ):
+            # Prepared by an older Manager: no buckets or character data yet.
             return True
         if fingerprint and prepared_against != fingerprint:
             return True
