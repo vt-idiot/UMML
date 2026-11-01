@@ -3,35 +3,60 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import sqlite3
-import struct
-import sys
 import tempfile
-import types
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .asset_codec import (
+    CACHE_NAME,
+    AssetResolver,
+    BundleNameCache,
+    MetadataError,
+    MetaIndex,
+    encrypt_asset,
+    iter_source_files,
+    sha256_bytes,
+    target_for,
+    write_or_link,
+)
 from .locking import FileLock, LockError
 from .models import PACKAGE_UMML_ASSETS, ModRecord
 from .options import OptionError, select_source_paths
-from .safety import SafetyError, atomic_copy_file, hash_file, validate_regular_tree
+from .safety import SafetyError, hash_file, validate_regular_tree
 from .store import ManagerStore, StoreError
 
-_AB_KEY = b"\x53\x2B\x46\x31\xE4\xA7\xB9\x47\x3E\x7C\xFB"
+
+@dataclass
+class SourceIndex:
+    flat_files: dict[str, str] = field(default_factory=dict)
+    source_files: dict[str, str] = field(default_factory=dict)
+    source_hashes: dict[str, str] = field(default_factory=dict)
+    source_payloads: dict[str, dict[str, str]] = field(default_factory=dict)
+    source_roots: dict[str, str] = field(default_factory=dict)
+    missing: int = 0
 
 
-class _NullWidget:
-    def __setitem__(self, key, value):
-        return None
+class SourceEncoder:
+    """Turn one mod source file into {game target: encrypted bytes}."""
 
-    def config(self, **kwargs):
-        return None
+    def __init__(self, resolver: AssetResolver, names: BundleNameCache | None = None):
+        self.resolver = resolver
+        self._names = names
 
+    def encode(self, relative: str, source: Path) -> tuple[dict[str, bytes], int]:
+        data = source.read_bytes()
+        resolution = self.resolver.resolve(relative, source, data)
+        if resolution.row is None:
+            return {}, 1 if resolution.reason == "not-in-metadata" else 0
+        target = target_for(resolution.row.hash_name)
+        if target is None:
+            return {}, 1
+        return {target: encrypt_asset(data, resolution.row.key)}, 0
 
-class _NullRoot:
-    def update_idletasks(self):
-        return None
+    def close(self) -> None:
+        if self._names is not None:
+            self._names.save()
 
 
 class LegacyAssetAdapter:
@@ -75,77 +100,68 @@ class LegacyAssetAdapter:
         assets: Path,
         output: Path,
     ) -> ModRecord:
-        if record.option_groups:
-            return self._prepare_configurable_locked(record, assets, output)
-
+        configurable = bool(record.option_groups)
         stage_root = Path(
             tempfile.mkdtemp(prefix=f".{output.name}-prepare-", dir=output.parent)
         )
-        decoded = stage_root / "decoded"
         normalized = stage_root / "normalized"
-        decoded.mkdir()
         normalized.mkdir()
         backup = self._backup_path(output)
         moved_old = False
         moved_new = False
         try:
-            decoder = self._decoder()
-            _decoded_count, missing = decoder.decrypt_assets_internal(
-                str(assets),
-                str(decoded),
-                use_hash=False,
-                filter_path=None,
+            index = self._encode_sources(
+                assets,
+                normalized,
+                flat=not configurable,
+                strict=configurable,
             )
             try:
-                validate_regular_tree(decoded)
+                validate_regular_tree(normalized)
             except SafetyError as exc:
                 raise StoreError(f"Prepared output was unsafe: {exc}") from exc
 
-            files: dict[str, str] = {}
-            for path in sorted(item for item in decoded.rglob("*") if item.is_file()):
-                name = path.name
-                if len(name) < 2:
-                    continue
-                target = (Path(name[:2]) / name).as_posix()
-                destination = normalized / target
-                if target in files:
+            if configurable:
+                if not index.source_payloads:
                     raise StoreError(
-                        f"Preparation produced duplicate target hash {name}; existing cache was preserved."
+                        f"No compatible configurable assets produced; {index.missing} entries "
+                        "were absent from metadata. The previous prepared cache was preserved."
                     )
-                atomic_copy_file(path, destination)
-                files[target] = hash_file(destination)
-            if not files:
-                raise StoreError(
-                    f"No compatible assets produced; {missing} entries were absent from metadata. "
-                    "The previous prepared cache was preserved."
+                try:
+                    selected_sources = select_source_paths(
+                        record.option_groups,
+                        {},
+                        index.source_payloads,
+                    )
+                except OptionError as exc:
+                    raise StoreError(f"Invalid configurable mod manifest: {exc}") from exc
+                files = self._flatten_selected_payloads(
+                    selected_sources,
+                    index.source_payloads,
+                    context="default configurable selection",
                 )
+                if not files:
+                    raise StoreError(
+                        "The default configurable selection produced no deployable assets; "
+                        "the previous prepared cache was preserved."
+                    )
+            else:
+                files = index.flat_files
+                if not files:
+                    raise StoreError(
+                        f"No compatible assets produced; {index.missing} entries were absent "
+                        "from metadata. The previous prepared cache was preserved."
+                    )
 
-            # Build a second, isolated source index. It is not deployed for ordinary
-            # mods; it exists so the UI can explain and later configure whole source
-            # bundles, including bundles that expand into several game targets.
-            (
-                source_files,
-                source_hashes,
-                source_payloads,
-                source_roots,
-                _mapping_missing,
-            ) = self._prepare_source_payloads(
-                decoder,
-                assets=assets,
-                stage_root=stage_root,
-                normalized=normalized,
-                strict=False,
-            )
             fingerprint = hash_file(self.meta_path)
-
             updated = replace(
                 record,
                 prepared_path=str(output),
                 files=files,
-                source_files=source_files,
-                source_hashes=source_hashes,
-                source_payloads=source_payloads,
-                source_roots=source_roots,
+                source_files=index.source_files,
+                source_hashes=index.source_hashes,
+                source_payloads=index.source_payloads,
+                source_roots=index.source_roots,
                 source_indexed_against=fingerprint,
                 prepared_against=fingerprint,
                 prepared_at=datetime.now(timezone.utc).isoformat(),
@@ -163,221 +179,82 @@ class LegacyAssetAdapter:
             if backup.exists() and not output.exists():
                 os.replace(backup, output)
 
-    def _prepare_configurable_locked(
-        self,
-        record: ModRecord,
-        assets: Path,
-        output: Path,
-    ) -> ModRecord:
-        """Preserve every authored source bundle and every target it expands into."""
+    def _source_encoder(self) -> "SourceEncoder":
+        """Return the object that turns one source file into game targets.
 
-        stage_root = Path(
-            tempfile.mkdtemp(prefix=f".{output.name}-prepare-", dir=output.parent)
-        )
-        normalized = stage_root / "normalized"
-        normalized.mkdir()
-        backup = self._backup_path(output)
-        moved_old = False
-        moved_new = False
+        Tests replace this to fake multi-target bundles without real metadata.
+        """
+
         try:
-            decoder = self._decoder()
-            (
-                source_files,
-                source_hashes,
-                source_payloads,
-                source_roots,
-                missing,
-            ) = self._prepare_source_payloads(
-                decoder,
-                assets=assets,
-                stage_root=stage_root,
-                normalized=normalized,
-                strict=True,
-            )
-            if not source_payloads:
-                raise StoreError(
-                    f"No compatible configurable assets produced; {missing} entries were absent "
-                    "from metadata. The previous prepared cache was preserved."
-                )
-            try:
-                selected_sources = select_source_paths(
-                    record.option_groups,
-                    {},
-                    source_payloads,
-                )
-            except OptionError as exc:
-                raise StoreError(f"Invalid configurable mod manifest: {exc}") from exc
+            meta = MetaIndex.load(self.meta_path)
+        except MetadataError as exc:
+            raise StoreError(str(exc)) from exc
+        names = BundleNameCache(self.store.paths.root / CACHE_NAME)
+        return SourceEncoder(AssetResolver(meta, names), names)
 
-            files = self._flatten_selected_payloads(
-                selected_sources,
-                source_payloads,
-                context="default configurable selection",
-            )
-            if not files:
-                raise StoreError(
-                    "The default configurable selection produced no deployable assets; "
-                    "the previous prepared cache was preserved."
-                )
-            fingerprint = hash_file(self.meta_path)
-
-            updated = replace(
-                record,
-                prepared_path=str(output),
-                files=files,
-                source_files=source_files,
-                source_hashes=source_hashes,
-                source_payloads=source_payloads,
-                source_roots=source_roots,
-                source_indexed_against=fingerprint,
-                prepared_against=fingerprint,
-                prepared_at=datetime.now(timezone.utc).isoformat(),
-            )
-            return self._commit_prepared(
-                updated,
-                output=output,
-                normalized=normalized,
-                backup=backup,
-                moved_old_ref=[moved_old],
-                moved_new_ref=[moved_new],
-            )
-        finally:
-            shutil.rmtree(stage_root, ignore_errors=True)
-            if backup.exists() and not output.exists():
-                os.replace(backup, output)
-
-    def _prepare_source_payloads(
+    def _encode_sources(
         self,
-        decoder,
-        *,
         assets: Path,
-        stage_root: Path,
         normalized: Path,
+        *,
+        flat: bool,
         strict: bool,
-    ) -> tuple[
-        dict[str, str],
-        dict[str, str],
-        dict[str, dict[str, str]],
-        dict[str, str],
-        int,
-    ]:
-        source_files: dict[str, str] = {}
-        source_hashes: dict[str, str] = {}
-        source_payloads: dict[str, dict[str, str]] = {}
-        source_roots: dict[str, str] = {}
-        missing = 0
-        try:
-            connection = sqlite3.connect(str(self.meta_path))
-        except sqlite3.Error as exc:
-            raise StoreError(
-                f"Could not open metadata for source indexing: {exc}"
-            ) from exc
-        try:
-            cursor = connection.cursor()
-            cursor.execute("PRAGMA table_info(a)")
-            columns = {str(row[1]) for row in cursor.fetchall()}
-            if "n" not in columns or "h" not in columns:
-                raise StoreError("Metadata table a is missing source-name/hash columns")
-            has_encrypt = "e" in columns
+    ) -> "SourceIndex":
+        """Resolve and encrypt every source file exactly once.
 
-            for source in sorted(item for item in assets.rglob("*") if item.is_file()):
-                relative = source.relative_to(assets).as_posix()
+        Writes the per-source tree (``sources/<token>/<aa>/<hash>``) used by the
+        UI and configurable mods and, when ``flat`` is set, the flat deploy tree
+        (``<aa>/<hash>``). Identical bytes in both trees are hardlinked inside
+        the stage instead of being written twice.
+        """
+
+        encoder = self._source_encoder()
+        index = SourceIndex()
+        flat_owner: dict[str, Path] = {}
+        try:
+            for relative, source in iter_source_files(assets):
                 root_relative = (
                     Path("sources")
                     / hashlib.sha256(relative.encode("utf-8")).hexdigest()[:20]
                 ).as_posix()
                 try:
-                    payload, source_missing = self._decode_configurable_source(
-                        decoder,
-                        cursor,
-                        source=source,
-                        relative=relative,
-                        root_relative=root_relative,
-                        stage_root=stage_root,
-                        normalized=normalized,
-                        has_encrypt=has_encrypt,
-                    )
+                    outputs, counted_missing = encoder.encode(relative, source)
                 except Exception:
                     if strict:
                         raise
-                    missing += 1
+                    index.missing += 1
                     continue
-                missing += source_missing
-                if not payload:
+                index.missing += counted_missing
+                if not outputs:
                     continue
-                source_payloads[relative] = payload
-                source_roots[relative] = root_relative
+
+                payload: dict[str, str] = {}
+                for target in sorted(outputs):
+                    data = outputs[target]
+                    digest = sha256_bytes(data)
+                    destination = normalized / root_relative / target
+                    write_or_link(data, destination)
+                    payload[target] = digest
+                    if flat:
+                        flat_destination = normalized / target
+                        if target in flat_owner:
+                            # Two sources map to one game file: the later source
+                            # (sorted path order) wins, as the legacy decoder's
+                            # overwrite did, but deterministically.
+                            flat_destination.unlink()
+                        write_or_link(data, flat_destination, link_from=destination)
+                        flat_owner[target] = destination
+                        index.flat_files[target] = digest
+
+                index.source_payloads[relative] = payload
+                index.source_roots[relative] = root_relative
                 if len(payload) == 1:
-                    target, sha256 = next(iter(payload.items()))
-                    source_files[relative] = target
-                    source_hashes[relative] = sha256
+                    target, digest = next(iter(payload.items()))
+                    index.source_files[relative] = target
+                    index.source_hashes[relative] = digest
         finally:
-            connection.close()
-        return source_files, source_hashes, source_payloads, source_roots, missing
-
-    def _decode_configurable_source(
-        self,
-        decoder,
-        cursor,
-        *,
-        source: Path,
-        relative: str,
-        root_relative: str,
-        stage_root: Path,
-        normalized: Path,
-        has_encrypt: bool,
-    ) -> tuple[dict[str, str], int]:
-        token = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:20]
-        input_root = stage_root / "source-inputs" / token
-        isolated_source = input_root / Path(relative)
-        atomic_copy_file(source, isolated_source)
-        decoded_root = stage_root / "source-decoded" / token
-        decoded_root.mkdir(parents=True, exist_ok=True)
-
-        _count, missing = decoder.decrypt_assets_internal(
-            str(input_root),
-            str(decoded_root),
-            use_hash=False,
-            filter_path=None,
-        )
-        try:
-            validate_regular_tree(decoded_root)
-        except SafetyError as exc:
-            raise StoreError(
-                f"Prepared source output for {relative!r} was unsafe: {exc}"
-            ) from exc
-
-        payload: dict[str, str] = {}
-        for decoded in sorted(item for item in decoded_root.rglob("*") if item.is_file()):
-            name = decoded.name
-            if len(name) < 2:
-                continue
-            target = (Path(name[:2]) / name).as_posix()
-            destination = normalized / root_relative / target
-            if target in payload:
-                raise StoreError(
-                    f"Source {relative!r} produced duplicate target {target}; existing cache was preserved."
-                )
-            atomic_copy_file(decoded, destination)
-            payload[target] = hash_file(destination)
-        if payload:
-            return payload, int(missing or 0)
-
-        row = self._lookup_asset_row(
-            cursor,
-            relative,
-            source,
-            has_encrypt=has_encrypt,
-        )
-        if row is None:
-            return {}, int(missing or 0) + (1 if self._looks_like_game_asset(source) else 0)
-        hash_name, encryption_key = row
-        name = Path(hash_name).name
-        if len(name) < 2:
-            return {}, int(missing or 0) + 1
-        target = (Path(name[:2]) / name).as_posix()
-        destination = normalized / root_relative / target
-        self._decode_source(source, destination, encryption_key)
-        return {target: hash_file(destination)}, int(missing or 0)
+            encoder.close()
+        return index
 
     @staticmethod
     def _flatten_selected_payloads(
@@ -432,134 +309,3 @@ class LegacyAssetAdapter:
             raise
         shutil.rmtree(backup, ignore_errors=True)
         return updated
-
-    @classmethod
-    def _lookup_asset_row(
-        cls,
-        cursor,
-        relative: str,
-        source: Path,
-        *,
-        has_encrypt: bool,
-    ) -> tuple[str, int] | None:
-        cursor.execute(
-            "SELECT h, e FROM a WHERE n=?" if has_encrypt else "SELECT h FROM a WHERE n=?",
-            (relative,),
-        )
-        row = cursor.fetchone()
-        if row and row[0]:
-            return str(row[0]), int(row[1]) if has_encrypt else 0
-
-        resolved_name = cls._unity_bundle_name(source)
-        if not resolved_name:
-            return None
-        cursor.execute(
-            "SELECT h, e FROM a WHERE n=?" if has_encrypt else "SELECT h FROM a WHERE n=?",
-            (resolved_name,),
-        )
-        row = cursor.fetchone()
-        if not row or not row[0]:
-            return None
-        return str(row[0]), int(row[1]) if has_encrypt else 0
-
-    @staticmethod
-    def _unity_bundle_name(source: Path) -> str:
-        try:
-            with source.open("rb") as handle:
-                if not handle.read(8).startswith(b"UnityFS"):
-                    return ""
-            import UnityPy
-
-            environment = UnityPy.load(str(source))
-            for obj in environment.objects:
-                if obj.type.name != "AssetBundle":
-                    continue
-                bundle = obj.read()
-                resolved = os.path.splitext(str(bundle.m_Name or ""))[0]
-                if resolved:
-                    return resolved
-        except Exception:
-            return ""
-        return ""
-
-    @staticmethod
-    def _looks_like_game_asset(source: Path) -> bool:
-        if source.suffix.casefold() in {".acb", ".awb", ".usm"}:
-            return True
-        try:
-            return source.read_bytes()[:8].startswith(b"UnityFS")
-        except OSError:
-            return False
-
-    @staticmethod
-    def _decode_source(source: Path, destination: Path, encryption_key: int) -> None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if encryption_key == 0:
-            atomic_copy_file(source, destination)
-            return
-        data = bytearray(source.read_bytes())
-        if len(data) > 256:
-            key = LegacyAssetAdapter._derive_asset_key(encryption_key)
-            for index in range(256, len(data)):
-                data[index] ^= key[index % len(key)]
-        destination.write_bytes(data)
-
-    @staticmethod
-    def _derive_asset_key(key_long: int) -> bytes:
-        key_bytes = struct.pack("<q", key_long)
-        final = bytearray(len(_AB_KEY) * 8)
-        for index, value in enumerate(_AB_KEY):
-            offset = index * 8
-            for byte_index in range(8):
-                final[offset + byte_index] = value ^ key_bytes[byte_index]
-        return bytes(final)
-
-    def _decoder(self):
-        if sys.platform != "win32" and "winreg" not in sys.modules:
-            stub = types.ModuleType("winreg")
-            stub.HKEY_CURRENT_USER = object()
-            stub.HKEY_LOCAL_MACHINE = object()
-            sys.modules["winreg"] = stub
-        try:
-            import UMML_core as core
-        except Exception as exc:
-            raise StoreError(f"Could not load UMML's asset adapter: {exc}") from exc
-
-        meta_path = str(self.meta_path)
-
-        class Decoder:
-            progress_bar = _NullWidget()
-            progress_label = _NullWidget()
-            root = _NullRoot()
-
-            def __init__(self):
-                self.meta_path = meta_path
-
-            @staticmethod
-            def scan_full_path(root):
-                root_path = Path(root)
-                for path in root_path.rglob("*"):
-                    if path.is_file():
-                        yield path.relative_to(root_path).as_posix()
-
-        decoder_host = getattr(core, "UMMLApp", None)
-        if decoder_host is None:
-            decoder_host = getattr(core, "ModLoaderGUI", None)
-        decoder_method = getattr(
-            decoder_host,
-            "decrypt_assets_internal",
-            None,
-        )
-        if decoder_method is None:
-            raise StoreError(
-                "UMML's asset adapter does not expose "
-                "decrypt_assets_internal through UMMLApp or ModLoaderGUI. "
-                "Install a compatible UMML backend or update the Manager."
-            )
-
-        decoder = Decoder()
-        decoder.decrypt_assets_internal = types.MethodType(
-            decoder_method,
-            decoder,
-        )
-        return decoder
