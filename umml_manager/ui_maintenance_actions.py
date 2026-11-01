@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tkinter import messagebox
 
-from .models import PACKAGE_UMML_ASSETS
+from .models import PACKAGE_UMML_ASSETS, has_prepared_state
 from .process import running_game_processes
 from .safety import SafetyError, hash_file, validate_sha256
 from .ui_button_actions import ButtonStateActions
@@ -15,7 +15,7 @@ class MaintenanceActions(ButtonStateActions):
     def _mod_status(self, mod) -> str:
         if mod.package_type != PACKAGE_UMML_ASSETS:
             return f"{mod.package_type}; backend needed"
-        if not mod.files or not mod.prepared_path:
+        if not has_prepared_state(mod):
             return "needs prepare"
         current = self.metadata_fingerprint.get().strip().casefold()
         prepared = str(mod.prepared_against or "").strip().casefold()

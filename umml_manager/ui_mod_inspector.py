@@ -471,11 +471,15 @@ def inspect_selected_mod(app, page) -> None:
         return
 
     metadata_ready = Path(app.meta_path.get()).expanduser().is_file()
-    needs_index = not record.source_payloads and metadata_ready
+    needs_index = (
+        not record.source_payloads and not record.pending_targets and metadata_ready
+    )
     if needs_index:
         app._run_task(
             f"Analyzing {record.name} automatically…",
-            lambda: LegacyAssetAdapter(app.store, app.meta_path.get()).prepare(record),
+            lambda: LegacyAssetAdapter(
+                app.store, app.meta_path.get(), app.dat_path.get()
+            ).prepare(record),
             lambda prepared: _open_inspector(app, page, prepared),
             failed=lambda exc: _inspection_prepare_failed(app, record, exc),
         )

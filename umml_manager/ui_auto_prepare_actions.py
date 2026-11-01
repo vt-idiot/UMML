@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .legacy_adapter import LegacyAssetAdapter
-from .models import PACKAGE_UMML_ASSETS
+from .models import PACKAGE_UMML_ASSETS, has_prepared_state
 from .ui_maintenance_actions import MaintenanceActions
 
 
@@ -102,6 +102,8 @@ class AutoPrepareActions(MaintenanceActions):
             return f"{mod.package_type}; backend needed"
         if not self._record_needs_auto_prepare(mod):
             self._clear_auto_prepare_error(mod.id)
+            if getattr(mod, "pending_targets", None) and not mod.files:
+                return "waiting for game download"
             return "ready"
         if self._auto_prepare_errors().get(mod.id):
             return "automatic preparation issue"
@@ -140,6 +142,16 @@ class AutoPrepareActions(MaintenanceActions):
             return result
 
         extra: list[str] = []
+        if record.prepared_path and (record.pending_targets or record.dormant_sources):
+            extra.append(
+                "Assets\n"
+                f"{len(record.files)} active, "
+                f"{len(record.pending_targets)} waiting for the game to download them, "
+                f"{len(record.dormant_sources)} not in this game's data (for example "
+                "characters that are not in this region yet).\n"
+                "Waiting assets are added automatically once the game downloads the "
+                "originals, so the stock files can be backed up first."
+            )
         if record.targets:
             rendered = []
             for category, values in sorted(record.targets.items()):
@@ -286,6 +298,7 @@ class AutoPrepareActions(MaintenanceActions):
             lambda: LegacyAssetAdapter(
                 self.store,
                 self.meta_path.get(),
+                self.dat_path.get(),
             ).prepare(candidate),
             self._auto_prepare_completed,
             failed=lambda exc: self._auto_prepare_failed(candidate, exc),
@@ -329,7 +342,7 @@ class AutoPrepareActions(MaintenanceActions):
         fingerprint = self.metadata_fingerprint.get().strip().casefold()
         prepared_against = str(record.prepared_against or "").strip().casefold()
         indexed_against = str(record.source_indexed_against or "").strip().casefold()
-        if not record.prepared_path or not record.files:
+        if not has_prepared_state(record):
             return True
         if fingerprint and prepared_against != fingerprint:
             return True
@@ -342,7 +355,20 @@ class AutoPrepareActions(MaintenanceActions):
                 source not in record.source_roots
                 for source in record.source_payloads
             )
-        return False
+        return self._pending_targets_arrived(record)
+
+    def _pending_targets_arrived(self, record) -> bool:
+        """True once the game has downloaded any asset this mod was waiting on."""
+
+        if not getattr(record, "pending_targets", None):
+            return False
+        try:
+            dat = Path(self.dat_path.get()).expanduser()
+        except (OSError, ValueError, AttributeError):
+            return False
+        if not dat.is_dir():
+            return False
+        return any((dat / target).is_file() for target in record.pending_targets)
 
     def _metadata_ready_for_auto_prepare(self) -> bool:
         try:
@@ -416,5 +442,5 @@ def should_prepare_automatically(record, meta_path: str) -> bool:
     return bool(
         record.package_type == PACKAGE_UMML_ASSETS
         and metadata_ready
-        and (not record.prepared_path or not record.files)
+        and not has_prepared_state(record)
     )

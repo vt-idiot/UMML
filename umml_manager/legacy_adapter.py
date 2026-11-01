@@ -34,17 +34,24 @@ class SourceIndex:
     source_hashes: dict[str, str] = field(default_factory=dict)
     source_payloads: dict[str, dict[str, str]] = field(default_factory=dict)
     source_roots: dict[str, str] = field(default_factory=dict)
+    pending_targets: dict[str, str] = field(default_factory=dict)
+    dormant_sources: list[str] = field(default_factory=list)
     missing: int = 0
 
 
 class SourceEncoder:
-    """Turn one mod source file into {game target: encrypted bytes}."""
+    """Turn one mod source file into {game target: encrypted bytes}.
+
+    When ``target_filter`` is set, targets it rejects are returned with a value
+    of ``None`` and are not encrypted at all (they are pending).
+    """
 
     def __init__(self, resolver: AssetResolver, names: BundleNameCache | None = None):
         self.resolver = resolver
         self._names = names
+        self.target_filter = None
 
-    def encode(self, relative: str, source: Path) -> tuple[dict[str, bytes], int]:
+    def encode(self, relative: str, source: Path) -> tuple[dict[str, bytes | None], int]:
         data = source.read_bytes()
         resolution = self.resolver.resolve(relative, source, data)
         if resolution.row is None:
@@ -52,6 +59,8 @@ class SourceEncoder:
         target = target_for(resolution.row.hash_name)
         if target is None:
             return {}, 1
+        if self.target_filter is not None and not self.target_filter(target):
+            return {target: None}, 0
         return {target: encrypt_asset(data, resolution.row.key)}, 0
 
     def close(self) -> None:
@@ -62,9 +71,19 @@ class SourceEncoder:
 class LegacyAssetAdapter:
     """Prepare legacy UMML assets and index source-bundle ownership safely."""
 
-    def __init__(self, store: ManagerStore, meta_path: str | Path):
+    def __init__(
+        self,
+        store: ManagerStore,
+        meta_path: str | Path,
+        dat_path: str | Path | None = None,
+    ):
+        """``dat_path`` enables bucketing: only targets the game has already
+        downloaded are prepared; the rest are recorded as pending."""
+
         self.store = store
         self.meta_path = Path(meta_path).expanduser()
+        dat = Path(dat_path).expanduser() if dat_path else None
+        self.dat_path = dat if dat is not None and dat.is_dir() else None
 
     def prepare(self, record: ModRecord) -> ModRecord:
         if record.package_type != PACKAGE_UMML_ASSETS:
@@ -148,7 +167,7 @@ class LegacyAssetAdapter:
                     )
             else:
                 files = index.flat_files
-                if not files:
+                if not files and not index.pending_targets:
                     raise StoreError(
                         f"No compatible assets produced; {index.missing} entries were absent "
                         "from metadata. The previous prepared cache was preserved."
@@ -163,6 +182,8 @@ class LegacyAssetAdapter:
                 source_hashes=index.source_hashes,
                 source_payloads=index.source_payloads,
                 source_roots=index.source_roots,
+                pending_targets=index.pending_targets,
+                dormant_sources=index.dormant_sources,
                 source_indexed_against=fingerprint,
                 prepared_against=fingerprint,
                 prepared_at=datetime.now(timezone.utc).isoformat(),
@@ -210,6 +231,11 @@ class LegacyAssetAdapter:
         """
 
         encoder = self._source_encoder()
+        if flat and self.dat_path is not None:
+            dat = self.dat_path
+            # Only link over files the game itself downloaded; anything else
+            # would have no stock baseline and might be overwritten anyway.
+            encoder.target_filter = lambda target: (dat / target).is_file()
         index = SourceIndex()
         flat_owner: dict[str, Path] = {}
         try:
@@ -227,11 +253,16 @@ class LegacyAssetAdapter:
                     continue
                 index.missing += counted_missing
                 if not outputs:
+                    if counted_missing:
+                        index.dormant_sources.append(relative)
                     continue
 
                 payload: dict[str, str] = {}
                 for target in sorted(outputs):
                     data = outputs[target]
+                    if data is None:
+                        index.pending_targets[target] = relative
+                        continue
                     digest = sha256_bytes(data)
                     destination = normalized / root_relative / target
                     write_or_link(data, destination)
@@ -247,6 +278,8 @@ class LegacyAssetAdapter:
                         flat_owner[target] = destination
                         index.flat_files[target] = digest
 
+                if not payload:
+                    continue
                 index.source_payloads[relative] = payload
                 index.source_roots[relative] = root_relative
                 if len(payload) == 1:
