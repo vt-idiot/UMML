@@ -8,10 +8,11 @@ import stat
 import tarfile
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Iterator
 
 from .discovery import is_mod_root, scan_mod_candidates
 from .importer_safety import (
@@ -25,8 +26,10 @@ from .models import (
     PACKAGE_HACHIMI,
     PACKAGE_UMML_ASSETS,
     PACKAGE_UNKNOWN,
+    ORIGIN_FOLDER,
     ModRecord,
     Profile,
+    SourceOrigin,
     SourceSpec,
 )
 from .safety import (
@@ -39,6 +42,15 @@ from .safety import (
     storage_component,
     tree_digest,
     validate_regular_tree,
+)
+from .source_refs import (
+    SourceUnavailableError,
+    archive_origin,
+    find_moved_sources,
+    folder_origin,
+    open_source,
+    source_status,
+    verify_candidate,
 )
 
 REGISTRY_VERSION = 2
@@ -291,7 +303,15 @@ class ManagerStore:
         mod_id: str | None = None,
         source: SourceSpec | None = None,
         metadata_overrides: dict[str, Any] | None = None,
+        reference: bool = False,
+        origin: SourceOrigin | None = None,
     ) -> ModRecord:
+        """Import a mod folder.
+
+        With ``reference`` (or an explicit ``origin``) nothing is copied: the
+        record points at the files where they are and remembers their hash.
+        """
+
         try:
             selected = resolve_regular_directory(folder, label="Mod folder")
         except ImportSafetyError as exc:
@@ -328,30 +348,51 @@ class ManagerStore:
         chosen_id = _available_record_id(base_id, version, existing)
         existing_record = existing_by_id.get(chosen_id)
         destination = self.source_destination(chosen_id, version)
-        try:
-            incoming_digest = tree_digest(selected)
-            if destination.exists():
-                if incoming_digest != tree_digest(destination):
-                    raise StoreError(
-                        f"Immutable source already exists for {chosen_id} {version} "
-                        "with different contents. Change the mod version or import "
-                        "it with a different ID."
-                    )
-                if (
-                    existing_record is not None
-                    and existing_record.version == version
-                    and Path(existing_record.source_path).expanduser().resolve()
-                    == destination.resolve()
-                ):
-                    return existing_record
-            else:
-                _copy_tree_atomic(
-                    selected,
-                    destination,
-                    expected_digest=incoming_digest,
+        if reference or origin is not None:
+            try:
+                origin = origin or folder_origin(selected)
+            except (OSError, SafetyError) as exc:
+                raise StoreError(str(exc)) from exc
+            if existing_record is not None and existing_record.version == version:
+                same = (
+                    existing_record.origin is not None
+                    and existing_record.origin.kind == origin.kind
+                    and existing_record.origin.sha256 == origin.sha256
                 )
-        except SafetyError as exc:
-            raise StoreError(str(exc)) from exc
+                if not same:
+                    raise StoreError(
+                        f"{chosen_id} {version} is already in the library with different "
+                        "contents. Change the mod version or import it with a different ID."
+                    )
+                if existing_record.origin != origin:
+                    existing_record = replace(existing_record, origin=origin)
+                    self.save_mod(existing_record)
+                return existing_record
+        if origin is None:
+            try:
+                incoming_digest = tree_digest(selected)
+                if destination.exists():
+                    if incoming_digest != tree_digest(destination):
+                        raise StoreError(
+                            f"Immutable source already exists for {chosen_id} {version} "
+                            "with different contents. Change the mod version or import "
+                            "it with a different ID."
+                        )
+                    if (
+                        existing_record is not None
+                        and existing_record.version == version
+                        and Path(existing_record.source_path).expanduser().resolve()
+                        == destination.resolve()
+                    ):
+                        return existing_record
+                else:
+                    _copy_tree_atomic(
+                        selected,
+                        destination,
+                        expected_digest=incoming_digest,
+                    )
+            except SafetyError as exc:
+                raise StoreError(str(exc)) from exc
 
         package_type = _package_type(selected)
         capabilities = _capabilities(package_type)
@@ -367,7 +408,8 @@ class ManagerStore:
             ),
             regions=_regions(metadata),
             source=source or SourceSpec(),
-            source_path=str(destination),
+            source_path="" if origin is not None else str(destination),
+            origin=origin,
             imported_at=_now(),
             package_type=package_type,
             capabilities=capabilities,
@@ -386,6 +428,7 @@ class ManagerStore:
         mod_id: str | None = None,
         source: SourceSpec | None = None,
         metadata_overrides: dict[str, Any] | None = None,
+        reference: bool = False,
     ) -> ModRecord:
         try:
             archive_path = resolve_regular_file(archive, label="Archive")
@@ -409,36 +452,103 @@ class ManagerStore:
         try:
             extract_archive(archive_path, temporary)
             root = find_mod_root(temporary)
+            origin = None
+            if reference:
+                subpath = root.relative_to(temporary).as_posix()
+                origin = archive_origin(
+                    archive_path,
+                    sha256=archive_source.sha256,
+                    subpath="" if subpath == "." else subpath,
+                )
             return self.import_folder(
                 root,
                 mod_id=mod_id,
                 source=archive_source,
                 metadata_overrides=metadata_overrides,
+                origin=origin,
             )
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
 
+    @contextmanager
+    def open_source(self, record: ModRecord) -> Iterator[Path]:
+        """Yield the mod root folder, wherever the source lives.
+
+        Raises StoreError when a referenced source is offline or changed.
+        """
+
+        try:
+            with open_source(
+                record,
+                scratch_parent=self.paths.root / "scratch",
+                extract=extract_archive,
+                find_root=find_mod_root,
+                on_refresh=self.save_mod,
+            ) as root:
+                yield root
+        except SourceUnavailableError as exc:
+            raise StoreError(str(exc)) from exc
+
+    def source_status(self, record: ModRecord) -> str:
+        return source_status(record)
+
+    def relink_source(self, mod_id: str, path: str | Path) -> ModRecord:
+        """Point a referenced mod at its moved file/folder after checking the hash."""
+
+        record = self.get_mod(mod_id)
+        if record.origin is None:
+            raise StoreError(f"{record.name} is stored in the library; it has nothing to relink.")
+        candidate = Path(path).expanduser()
+        if record.origin.kind == ORIGIN_FOLDER and candidate.is_dir() and not is_mod_root(candidate):
+            try:
+                candidate = find_mod_root(candidate)
+            except StoreError:
+                pass
+        match = verify_candidate(record.origin, candidate)
+        if match is None:
+            raise StoreError(
+                f"{candidate} is not the same content as {record.name} "
+                f"(expected sha256 {record.origin.sha256[:12]}...)."
+            )
+        updated = replace(record, origin=match)
+        self.save_mod(updated)
+        return updated
+
+    def find_missing_sources(
+        self,
+        search_root: str | Path,
+        *,
+        progress=None,
+    ) -> list[ModRecord]:
+        """Search a folder for every offline/changed referenced source and relink it."""
+
+        root = Path(search_root).expanduser()
+        if not root.is_dir():
+            raise StoreError(f"Not a folder: {root}")
+        found = find_moved_sources(self.list_mods(), root, progress=progress)
+        updated = []
+        for record in self.list_mods():
+            origin = found.get(record.id)
+            if origin is not None:
+                record = replace(record, origin=origin)
+                self.save_mod(record)
+                updated.append(record)
+        return updated
+
     def create_workspace(self, mod_id: str) -> Path:
         record = self.get_mod(mod_id)
-        source = Path(record.source_path)
-        if not source.is_dir():
-            raise StoreError(
-                f"Source files are missing for {record.name}"
-            )
-        try:
-            source_digest = tree_digest(source)
-        except SafetyError as exc:
-            raise StoreError(str(exc)) from exc
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
         destination = (
             self.paths.workspaces / sanitize_id(mod_id) / stamp
         )
         try:
-            _copy_tree_atomic(
-                source,
-                destination,
-                expected_digest=source_digest,
-            )
+            with self.open_source(record) as source:
+                source_digest = tree_digest(source)
+                _copy_tree_atomic(
+                    source,
+                    destination,
+                    expected_digest=source_digest,
+                )
         except SafetyError as exc:
             raise StoreError(str(exc)) from exc
         marker = {

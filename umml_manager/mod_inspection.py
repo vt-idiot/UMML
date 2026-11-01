@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .models import ModRecord
+from .source_refs import browsable_root
 
 
 _CHARACTER_PATTERNS = (
@@ -225,8 +226,9 @@ def _source_mappings(record: ModRecord) -> tuple[dict[str, tuple[str, ...]], boo
         complete = bool(mappings) and mapped_targets == set(record.files)
         return mappings, complete
 
-    assets = Path(record.source_path).expanduser() / "assets"
-    if assets.is_dir():
+    root = browsable_root(record)
+    assets = root / "assets" if root is not None else None
+    if assets is not None and assets.is_dir():
         files = [item for item in assets.rglob("*") if item.is_file()]
         if files:
             targets = list(record.files)

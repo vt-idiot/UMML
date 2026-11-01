@@ -316,6 +316,7 @@ class ManagerGUI(
             self.library.search_button,
             self.library.import_folder_button,
             self.library.import_archive_button,
+            self.library.find_sources_button,
             self.library.preview_conflicts_button,
         ):
             self._configure_button(button, enabled=not busy)
@@ -390,6 +391,10 @@ class ManagerGUI(
         self._configure_button(
             self.library.remove_button,
             enabled=record is not None and not busy,
+        )
+        self._configure_button(
+            self.library.locate_source_button,
+            enabled=record is not None and record.origin is not None and not busy,
         )
 
         blockers = True

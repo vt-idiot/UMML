@@ -11,7 +11,7 @@ from . import store as _store
 from .importer_safety import ImportSafetyError, resolve_regular_directory
 from .locking import FileLock, LockError
 from .manifest import ManifestError, normalize_manifest_policy
-from .models import ModRecord, SourceSpec
+from .models import ModRecord, SourceOrigin, SourceSpec
 from .options import OptionError
 
 
@@ -87,6 +87,8 @@ class ManagerStore(_BaseManagerStore):
         mod_id: str | None = None,
         source: SourceSpec | None = None,
         metadata_overrides: dict[str, Any] | None = None,
+        reference: bool = False,
+        origin: SourceOrigin | None = None,
     ) -> ModRecord:
         try:
             # Validate the user-selected leaf before resolution. The public
@@ -128,6 +130,8 @@ class ManagerStore(_BaseManagerStore):
                         mod_id=mod_id,
                         source=source,
                         metadata_overrides=metadata_overrides,
+                        reference=reference,
+                        origin=origin,
                     )
                     # The low-level store intentionally understands only common
                     # metadata. Enrich the record at the public library boundary

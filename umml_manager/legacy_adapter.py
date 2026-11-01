@@ -72,17 +72,8 @@ class LegacyAssetAdapter:
                 f"{record.name} is a {record.package_type} package and cannot be prepared "
                 "by the legacy asset decoder."
             )
-        source = Path(record.source_path)
-        assets = source / "assets"
-        if not assets.is_dir():
-            raise StoreError(f"Missing assets folder: {assets}")
         if not self.meta_path.is_file():
             raise StoreError(f"Metadata database not found: {self.meta_path}")
-        try:
-            validate_regular_tree(assets)
-        except SafetyError as exc:
-            raise StoreError(str(exc)) from exc
-
         output = self.store.prepared_destination(record)
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -90,7 +81,17 @@ class LegacyAssetAdapter:
                 self.store.paths.locks / f"prepare-{record.id}.lock",
                 purpose=f"preparing {record.id}",
             ):
-                return self._prepare_locked(record, assets, output)
+                # Referenced sources are read where they live (an archive is
+                # extracted to a scratch folder for the duration).
+                with self.store.open_source(record) as source:
+                    assets = source / "assets"
+                    if not assets.is_dir():
+                        raise StoreError(f"Missing assets folder: {assets}")
+                    try:
+                        validate_regular_tree(assets)
+                    except SafetyError as exc:
+                        raise StoreError(str(exc)) from exc
+                    return self._prepare_locked(record, assets, output)
         except LockError as exc:
             raise StoreError(str(exc)) from exc
 

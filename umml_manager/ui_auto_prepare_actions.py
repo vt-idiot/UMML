@@ -350,15 +350,17 @@ class AutoPrepareActions(MaintenanceActions):
         except (OSError, ValueError):
             return False
 
-    def _auto_prepare_key(self, record) -> tuple[str, str, str, str]:
+    def _auto_prepare_key(self, record) -> tuple[str, str, str, str, str]:
         return (
             record.id,
             record.version,
             self.metadata_fingerprint.get().strip().casefold(),
             record.source.sha256,
+            # A relinked (moved) source is a new attempt, not a known failure.
+            record.origin.path if record.origin is not None else "",
         )
 
-    def _auto_prepare_failed_keys(self) -> set[tuple[str, str, str, str]]:
+    def _auto_prepare_failed_keys(self) -> set[tuple[str, str, str, str, str]]:
         value = getattr(self, "_auto_prepare_failures", None)
         if value is None:
             value = set()
