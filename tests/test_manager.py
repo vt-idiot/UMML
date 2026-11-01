@@ -655,13 +655,17 @@ class ManagerTests(unittest.TestCase):
             output.mkdir(parents=True)
             (output / "old").write_text("working")
 
-            class Decoder:
+            class Encoder:
                 @staticmethod
-                def decrypt_assets_internal(*_args, **_kwargs):
-                    return 0, 1
+                def encode(*_args, **_kwargs):
+                    return {}, 1
+
+                @staticmethod
+                def close():
+                    pass
 
             adapter = LegacyAssetAdapter(store, meta)
-            with patch.object(adapter, "_decoder", return_value=Decoder()):
+            with patch.object(adapter, "_source_encoder", return_value=Encoder()):
                 with self.assertRaises(StoreError):
                     adapter.prepare(record)
             self.assertEqual((output / "old").read_text(), "working")

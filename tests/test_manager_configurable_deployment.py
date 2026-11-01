@@ -87,23 +87,18 @@ class ManagerConfigurableDeploymentTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            class FakeDecoder:
-                def decrypt_assets_internal(self, input_root, output, **_kwargs):
-                    source = next(path for path in Path(input_root).rglob("*") if path.is_file())
+            class FakeEncoder:
+                def encode(self, _relative, source):
                     payload = source.read_bytes()
-                    target_name = (
-                        common_hash_name
-                        if payload == common_bytes
-                        else character_hash_name
-                    )
-                    destination = Path(output)
-                    destination.mkdir(parents=True, exist_ok=True)
-                    (destination / target_name).write_bytes(payload)
-                    return 1, 0
+                    target = common_target if payload == common_bytes else character_target
+                    return {target: payload}, 0
+
+                def close(self):
+                    pass
 
             class TestAdapter(LegacyAssetAdapter):
-                def _decoder(self):
-                    return FakeDecoder()
+                def _source_encoder(self):
+                    return FakeEncoder()
 
             store = ManagerStore(root / "manager")
             imported = store.import_folder(package)
@@ -250,17 +245,19 @@ class ManagerConfigurableDeploymentTests(unittest.TestCase):
             first_target = f"aa/{first_name}"
             second_target = f"bb/{second_name}"
 
-            class FakeDecoder:
-                def decrypt_assets_internal(self, _input, output, **_kwargs):
-                    destination = Path(output)
-                    destination.mkdir(parents=True, exist_ok=True)
-                    (destination / first_name).write_bytes(b"first payload")
-                    (destination / second_name).write_bytes(b"second payload")
-                    return 2, 0
+            class FakeEncoder:
+                def encode(self, _relative, _source):
+                    return {
+                        first_target: b"first payload",
+                        second_target: b"second payload",
+                    }, 0
+
+                def close(self):
+                    pass
 
             class TestAdapter(LegacyAssetAdapter):
-                def _decoder(self):
-                    return FakeDecoder()
+                def _source_encoder(self):
+                    return FakeEncoder()
 
             store = ManagerStore(root / "manager")
             imported = store.import_folder(package)
