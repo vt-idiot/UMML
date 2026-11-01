@@ -242,7 +242,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
             )
 
             with patch(
-                "umml_manager.engine.atomic_copy_file",
+                "umml_manager.engine.link_or_copy",
                 side_effect=OSError("disk full"),
             ):
                 with self.assertRaises(ApplyError) as raised:
