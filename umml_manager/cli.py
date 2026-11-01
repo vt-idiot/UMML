@@ -74,6 +74,20 @@ def build_parser() -> argparse.ArgumentParser:
     imported = sub.add_parser("import")
     imported.add_argument("path")
     imported.add_argument("--id")
+    imported.add_argument(
+        "--reference",
+        action="store_true",
+        help="leave the files where they are and track them by hash instead of copying",
+    )
+
+    relink = sub.add_parser("relink", help="point a referenced mod at its moved source")
+    relink.add_argument("mod_id")
+    relink.add_argument("path")
+
+    find_sources = sub.add_parser(
+        "find-sources", help="search a folder for moved referenced sources and relink them"
+    )
+    find_sources.add_argument("folder")
 
     scan = sub.add_parser("scan")
     scan.add_argument("paths", nargs="*")
@@ -297,11 +311,20 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "import":
             path = Path(args.path)
             record = (
-                store.import_folder(path, mod_id=args.id)
+                store.import_folder(path, mod_id=args.id, reference=args.reference)
                 if path.is_dir()
-                else store.import_archive(path, mod_id=args.id)
+                else store.import_archive(path, mod_id=args.id, reference=args.reference)
             )
             print(record.id)
+        elif args.command == "relink":
+            record = store.relink_source(args.mod_id, args.path)
+            print(f"{record.id} -> {record.origin.path}")
+        elif args.command == "find-sources":
+            found = store.find_missing_sources(args.folder)
+            for record in found:
+                print(f"{record.id} -> {record.origin.path}")
+            if not found:
+                print("No moved sources found.")
         elif args.command == "scan":
             roots = [Path(item) for item in args.paths] or default_search_roots()
             for candidate in scan_mod_candidates(

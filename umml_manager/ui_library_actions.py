@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog
 
 from .deployment import ApplyEngine, LegacyBaselineMigrationRequired
@@ -86,7 +87,7 @@ class LibraryActions:
                 values=(
                     order.get(mod.id, "off"),
                     mod.version,
-                    mod.source.provider,
+                    self._source_label(mod),
                     self._mod_status(mod),
                 ),
             )
@@ -101,6 +102,14 @@ class LibraryActions:
             f"{profile.name}"
         )
         self.refresh_action_states()
+
+    @staticmethod
+    def _source_label(mod) -> str:
+        if mod.origin is None:
+            return mod.source.provider
+        # Cheap existence check only; the hash is verified when the files are used.
+        present = Path(mod.origin.path).exists()
+        return f"{mod.source.provider} (linked)" if present else "OFFLINE"
 
     def _mod_status(self, mod) -> str:
         if mod.package_type != PACKAGE_UMML_ASSETS:
@@ -270,10 +279,20 @@ class LibraryActions:
             self.library.tree.selection_set(mod_id)
             self.show_selected_mod()
 
+    def _reference_local_imports(self) -> bool:
+        """Keep local imports where they are (default) instead of copying them."""
+
+        try:
+            settings = self.store.load_settings(repair=False)
+        except Exception:
+            return True
+        return bool(settings.get("reference_local_imports", True))
+
     def import_folder(self):
         path = filedialog.askdirectory(parent=self.root)
         if path:
-            self._import(lambda: self.store.import_folder(path))
+            reference = self._reference_local_imports()
+            self._import(lambda: self.store.import_folder(path, reference=reference))
 
     def import_archive(self):
         path = filedialog.askopenfilename(
@@ -284,7 +303,75 @@ class LibraryActions:
             ),
         )
         if path:
-            self._import(lambda: self.store.import_archive(path))
+            reference = self._reference_local_imports()
+            self._import(lambda: self.store.import_archive(path, reference=reference))
+
+    def locate_source(self):
+        mod_id = self.selected_id()
+        if not mod_id:
+            self.status.set("Select a mod before locating its source")
+            return
+        record = self.store.get_mod(mod_id)
+        if record.origin is None:
+            self.status.set(f"{record.name} is stored in the library")
+            return
+        if record.origin.kind == "archive":
+            path = filedialog.askopenfilename(
+                parent=self.root,
+                title=f"Locate {Path(record.origin.path).name}",
+                filetypes=(
+                    ("Supported archives", "*.zip *.tar *.tar.gz *.tgz"),
+                    ("All files", "*"),
+                ),
+            )
+        else:
+            path = filedialog.askdirectory(
+                parent=self.root,
+                title=f"Locate the folder for {record.name}",
+            )
+        if not path:
+            return
+        self._run_task(
+            f"Checking {Path(path).name}...",
+            lambda: self.store.relink_source(mod_id, path),
+            self._finish_relink,
+        )
+
+    def _after_sources_relinked(self, records) -> None:
+        clear = getattr(self, "_clear_auto_prepare_error", None)
+        if clear is not None:
+            for record in records:
+                clear(record.id)
+        schedule = getattr(self, "_schedule_auto_prepare_scan", None)
+        if schedule is not None and records:
+            schedule(delay=80)
+
+    def _finish_relink(self, record):
+        self._after_sources_relinked([record])
+        self.refresh()
+        self.status.set(f"{record.name} now points at {record.origin.path}")
+
+    def find_missing_sources(self):
+        folder = filedialog.askdirectory(
+            parent=self.root,
+            title="Search this folder for moved mod sources",
+        )
+        if not folder:
+            return
+        self._run_task(
+            "Searching for moved sources...",
+            lambda: self.store.find_missing_sources(folder),
+            self._finish_find_sources,
+        )
+
+    def _finish_find_sources(self, records):
+        self._after_sources_relinked(records)
+        self.refresh()
+        if records:
+            names = ", ".join(record.name for record in records)
+            self.status.set(f"Relinked {len(records)} source(s): {names}")
+        else:
+            self.status.set("No moved sources were found in that folder")
 
     def _import(self, operation):
         self._run_task(

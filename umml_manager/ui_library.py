@@ -74,7 +74,13 @@ class LibraryPage(ttk.Frame):
             text="Import archive",
             command=app.import_archive,
         )
-        self.import_archive_button.grid(row=0, column=7, padx=(3, 0))
+        self.import_archive_button.grid(row=0, column=7, padx=3)
+        self.find_sources_button = ttk.Button(
+            toolbar,
+            text="Find missing sources",
+            command=app.find_missing_sources,
+        )
+        self.find_sources_button.grid(row=0, column=8, padx=(3, 0))
 
         left = ttk.Frame(self, style="Surface.TFrame", padding=10)
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 7))
@@ -209,6 +215,13 @@ class LibraryPage(ttk.Frame):
             state="disabled",
         )
         self.remove_button.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        self.locate_source_button = ttk.Button(
+            source_buttons,
+            text="Locate source...",
+            command=app.locate_source,
+            state="disabled",
+        )
+        self.locate_source_button.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
 
         actions = ttk.Frame(self, padding=(0, 10, 0, 0))
         actions.grid(row=2, column=0, columnspan=2, sticky="ew")

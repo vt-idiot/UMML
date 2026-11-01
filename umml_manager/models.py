@@ -46,6 +46,48 @@ class SourceSpec:
         )
 
 
+ORIGIN_FOLDER = "folder"
+ORIGIN_ARCHIVE = "archive"
+
+
+@dataclass
+class SourceOrigin:
+    """Where a referenced (not copied) mod source lives on disk.
+
+    ``sha256`` is the archive file hash, or the tree digest of the mod root for
+    a folder. ``subpath`` is the mod root inside the archive or folder. The
+    size/count/mtime fields are a cheap "has it changed?" check so the full
+    hash only runs when something looks different.
+    """
+
+    kind: str
+    path: str
+    sha256: str
+    subpath: str = ""
+    size_bytes: int = 0
+    file_count: int = 0
+    mtime_ns: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "SourceOrigin | None":
+        if not data:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError("Source origin must be an object")
+        kind = str(data.get("kind", ""))
+        if kind not in {ORIGIN_FOLDER, ORIGIN_ARCHIVE}:
+            raise ValueError(f"Unknown source origin kind: {kind!r}")
+        return cls(
+            kind=kind,
+            path=str(data.get("path", "")),
+            sha256=str(data.get("sha256", "")),
+            subpath=str(data.get("subpath", "")),
+            size_bytes=int(data.get("size_bytes") or 0),
+            file_count=int(data.get("file_count") or 0),
+            mtime_ns=int(data.get("mtime_ns") or 0),
+        )
+
+
 @dataclass
 class ModRecord:
     id: str
@@ -92,6 +134,9 @@ class ModRecord:
     compatibility_notes: str = ""
     prepared_against: str = ""
     prepared_at: str = ""
+    # Set when the source is referenced in place (for example on an external
+    # drive) instead of being copied into the library's sources folder.
+    origin: SourceOrigin | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ModRecord":
@@ -150,6 +195,7 @@ class ModRecord:
             compatibility_notes=policy.compatibility_notes,
             prepared_against=str(data.get("prepared_against", "")),
             prepared_at=str(data.get("prepared_at", "")),
+            origin=SourceOrigin.from_dict(data.get("origin")),
         )
 
     def to_dict(self) -> dict[str, Any]:

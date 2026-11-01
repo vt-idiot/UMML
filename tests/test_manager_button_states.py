@@ -10,7 +10,7 @@ except ImportError:  # Legacy-only validation intentionally installs no manager 
 
 if Image is not None:
     from umml_manager.gui import ManagerGUI
-    from umml_manager.models import ModRecord, Profile
+    from umml_manager.models import ModRecord, Profile, SourceOrigin
     from umml_manager.resolver import Resolution
     from umml_manager.ui_button_actions import ButtonStateActions
     from umml_manager.ui_library_actions import LibraryActions
@@ -101,6 +101,7 @@ class ManagerButtonStateTests(unittest.TestCase):
                 "search_button",
                 "import_folder_button",
                 "import_archive_button",
+                "find_sources_button",
                 "preview_conflicts_button",
                 "toggle_button",
                 "move_up_button",
@@ -108,6 +109,7 @@ class ManagerButtonStateTests(unittest.TestCase):
                 "prepare_button",
                 "workspace_button",
                 "remove_button",
+                "locate_source_button",
                 "apply_button",
             )
         }
@@ -171,6 +173,16 @@ class ManagerButtonStateTests(unittest.TestCase):
         self.assertEqual(app.library.prepare_button.options["state"], "disabled")
         self.assertEqual(app.library.workspace_button.options["state"], "disabled")
         self.assertEqual(app.library.remove_button.options["state"], "disabled")
+        self.assertEqual(app.library.locate_source_button.options["state"], "disabled")
+
+    def test_locate_source_only_for_referenced_mods(self):
+        app, mod, _profile = self._app(selected=True)
+        app.refresh_action_states()
+        self.assertEqual(app.library.locate_source_button.options["state"], "disabled")
+        mod.origin = SourceOrigin(kind="archive", path="M:/mods/pack.zip", sha256="0" * 64)
+        app.refresh_action_states()
+        self.assertEqual(app.library.locate_source_button.options["state"], "normal")
+        self.assertEqual(app.library.find_sources_button.options["state"], "normal")
 
     def test_selected_enabled_mod_gets_contextual_controls(self):
         app, _mod, _profile = self._app(selected=True, enabled=True)
@@ -200,6 +212,7 @@ class ManagerButtonStateTests(unittest.TestCase):
         app._busy = True
         app.refresh_action_states()
         self.assertEqual(app.library.import_archive_button.options["state"], "disabled")
+        self.assertEqual(app.library.find_sources_button.options["state"], "disabled")
         self.assertEqual(app.discover.browse_button.options["state"], "disabled")
         self.assertEqual(app.discover.install_gb_button.options["state"], "disabled")
         self.assertEqual(app.settings.autodetect_button.options["state"], "disabled")
