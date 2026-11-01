@@ -22,6 +22,9 @@ _MUTATING_METHODS = {
     "open_training_settings",
     "open_story_concert",
     "open_swap_character",
+    "swap_alt_to_main",
+    "restore_alt",
+    "edit_parameter_personality",
 }
 
 

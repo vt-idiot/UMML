@@ -12,8 +12,7 @@ import re
 import winreg
 import struct
 from pathlib import Path
-modloader_version = "1.5.0-hotfix"
-required_keys = ["mod_version", "title", "description", "modloader_version"]
+modloader_version = "2.0.2"
 
 # --- Check dependency ---
 def install_package(package):
@@ -50,60 +49,145 @@ except ImportError:
             "please try again."
         )
         sys.exit(0)
-print(f"{modloader_version}\n")
-print("[OK] UnityPy ready")
-print("[OK] vdf ready")
-print("[OK] apsw-sqlite3mc ready")
-print("[OK] pyyaml")
+print(f"UMML v{modloader_version} (Improved from Tumugu v1.2.0)")
+print("[OK] Dependencies verified: UnityPy, vdf, apsw-sqlite3mc, pyyaml\n")
 
 def resolve_case_sensitive_path(path_obj):
     """
     Try exact path first.
-    If missing, try common Umamusume casing variants.
+    If missing, try case-insensitive resolution across directory segments.
+    Returns None if path_obj is None, empty, or string "None".
     """
-    if path_obj and os.path.isdir(path_obj):
-        return str(path_obj)
+    if not path_obj:
+        return None
 
-    path_str = str(path_obj)
+    path_str = str(path_obj).strip().strip('"').strip("'")
+    if not path_str or path_str.lower() == "none":
+        return None
 
-    replacements = [
-        ("umamusume", "Umamusume"),
-        ("Umamusume", "umamusume"),
-        ("umamusume_Data", "Umamusume_Data"),
-        ("Umamusume_Data", "umamusume_Data"),
-    ]
+    if os.path.isdir(path_str) or os.path.isfile(path_str):
+        return path_str
 
-    for old, new in replacements:
-        alt = path_str.replace(old, new)
+    try:
+        p = Path(path_str)
+        parts = p.parts
+        if not parts:
+            return None
+        current = Path(parts[0])
+        if not current.exists():
+            return path_str
+        for part in parts[1:]:
+            direct = current / part
+            if direct.exists():
+                current = direct
+                continue
+            part_lower = part.lower()
+            found = False
+            try:
+                for entry in os.scandir(current):
+                    if entry.name.lower() == part_lower:
+                        current = current / entry.name
+                        found = True
+                        break
+            except Exception:
+                pass
+            if not found:
+                current = current / part
+        if current.exists():
+            print(f"Resolved case mismatch:\n{path_str}\n-> {current}")
+            return str(current)
+    except Exception:
+        pass
 
-        if alt != path_str and os.path.isdir(alt):
-            print(f"Resolved case mismatch:\n{path_str}\n-> {alt}")
-            return alt
+    return path_str
 
-    return str(path_obj)
+def is_game_running():
+    try:
+        import ctypes
+        from ctypes import wintypes
+        TH32CS_SNAPPROCESS = 0x00000002
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260)
+            ]
+        kernel32 = ctypes.windll.kernel32
+        h_snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if h_snap == -1:
+            return False
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        game_exes = {b"umamusume.exe", b"umamusumeprettyderby_jpn.exe", b"umamusumeprettyderby.exe", b"komoeumamusume.exe"}
+        found = False
+        if kernel32.Process32First(h_snap, ctypes.byref(pe)):
+            while True:
+                if pe.szExeFile.lower() in game_exes:
+                    found = True
+                    break
+                if not kernel32.Process32Next(h_snap, ctypes.byref(pe)):
+                    break
+        kernel32.CloseHandle(h_snap)
+        return found
+    except Exception:
+        return False
+
+def is_file_in_use(filepath):
+    """
+    Checks if a file is currently open/locked by another process using Windows CreateFileW with share_mode=0.
+    """
+    if not filepath or not os.path.isfile(filepath):
+        return False
+    try:
+        import ctypes
+        GENERIC_READ = 0x80000000
+        OPEN_EXISTING = 3
+        handle = ctypes.windll.kernel32.CreateFileW(
+            str(filepath),
+            GENERIC_READ,
+            0,
+            None,
+            OPEN_EXISTING,
+            0,
+            None
+        )
+        if handle == -1:
+            err = ctypes.GetLastError()
+            return err in (32, 33)
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return False
+    except Exception:
+        return False
 
 def find_dmm_umamusume():
-    try:
-        config_path = Path(os.environ.get("APPDATA", "")) / "dmmgameplayer5" / "dmmgame.cnf"
+    # 1. Check dmmgame.cnf
+    appdata = os.environ.get("APPDATA", "")
+    for folder in ["dmmgameplayer5", "dmmgameplayer"]:
+        config_path = Path(appdata) / folder / "dmmgame.cnf"
+        if config_path.is_file():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    game_data = json.load(f)
+                for game in game_data.get("contents", []):
+                    if game.get("productId") == "umamusume":
+                        path = game.get("detail", {}).get("path")
+                        if path and os.path.isdir(path):
+                            return path
+            except Exception as e:
+                print(f"DMM detection error: {e}")
 
-        if not config_path.is_file():
-            return None
-
-        with open(config_path, "r", encoding="utf-8") as f:
-            game_data = json.load(f)
-
-        for game in game_data.get("contents", []):
-            if (
-                game.get("productId") == "umamusume"
-                and game.get("detail", {}).get("installed") is True
-            ):
-                path = game.get("detail", {}).get("path")
-
-                if path and os.path.isdir(path):
-                    return path
-
-    except Exception as e:
-        print(f"DMM detection error: {e}")
+    # 2. Check common DMM directories
+    for drive in ["C:", "D:", "E:", "F:"]:
+        cand = os.path.join(drive, os.sep, "DMMGames", "umamusume")
+        if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "umamusume.exe")):
+            return cand
 
     return None
 
@@ -120,7 +204,10 @@ def get_steam_path():
     for key_path in possible_keys:
         try:
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path)
-            return winreg.QueryValueEx(key, "InstallPath")[0]
+            val, _ = winreg.QueryValueEx(key, "InstallPath")
+            winreg.CloseKey(key)
+            if val and os.path.isdir(val):
+                return val
         except FileNotFoundError:
             continue
 
@@ -133,21 +220,23 @@ def get_steam_path():
 
 def get_steam_libraries(steam_path):
     libraries = []
+    if steam_path and os.path.isdir(steam_path):
+        libraries.append(steam_path)
 
     vdf_path = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
-    if not os.path.exists(vdf_path):
-        return [steam_path]
-
-    with open(vdf_path, "r", encoding="utf-8") as f:
-        data = vdf.load(f)
-
-    folders = data.get("libraryfolders", {})
-
-    for key in folders:
-        if key.isdigit():
-            path = folders[key].get("path")
-            if path:
-                libraries.append(path)
+    if os.path.exists(vdf_path):
+        try:
+            with open(vdf_path, "r", encoding="utf-8") as f:
+                data = vdf.load(f)
+            folders = data.get("libraryfolders", {})
+            for key in folders:
+                entry = folders[key]
+                if isinstance(entry, dict):
+                    path = entry.get("path")
+                    if path and os.path.isdir(path) and path not in libraries:
+                        libraries.append(path)
+        except Exception as e:
+            print(f"Error reading libraryfolders.vdf: {e}")
 
     return libraries
 
@@ -157,25 +246,53 @@ def get_steam_libraries(steam_path):
 # ---------------------------
 
 def find_komoe_umamusume():
-    try:
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\komoemumamusume"
-        )
+    possible_keys = [
+        (winreg.HKEY_CURRENT_USER, r"Software\komoemumamusume"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\komoemumamusume"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\komoemumamusume"),
+    ]
+    for root_key, sub_key in possible_keys:
+        try:
+            key = winreg.OpenKey(root_key, sub_key)
+            game_dir_komoe, _ = winreg.QueryValueEx(key, "GameInstallPath")
+            winreg.CloseKey(key)
+            if game_dir_komoe and os.path.isdir(game_dir_komoe):
+                return game_dir_komoe
+        except Exception:
+            pass
 
-        display_icon, _ = winreg.QueryValueEx(key, "DisplayIcon")
-        winreg.CloseKey(key)
+    for drive in ["C:", "D:", "E:", "F:"]:
+        cand = os.path.join(drive, os.sep, "komoemumamusume", "komoemumamusume Game")
+        if os.path.isdir(cand):
+            return cand
 
-        game_dir_komoe = os.path.join(
-            os.path.dirname(display_icon),
-            "komoemumamusume Game"
-        )
+    return None
 
-        if os.path.isdir(game_dir_komoe):
-            return game_dir_komoe
+def find_kakao_umamusume():
+    possible_keys = [
+        (winreg.HKEY_CURRENT_USER, r"Software\KakaoGames\Umamusume"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\KakaoGames\Umamusume"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\KakaoGames\Umamusume"),
+    ]
+    for root_key, sub_key in possible_keys:
+        try:
+            key = winreg.OpenKey(root_key, sub_key)
+            for val_name in ["InstallPath", "Path", "GamePath"]:
+                try:
+                    val, _ = winreg.QueryValueEx(key, val_name)
+                    if val and os.path.isdir(val):
+                        winreg.CloseKey(key)
+                        return val
+                except FileNotFoundError:
+                    pass
+            winreg.CloseKey(key)
+        except Exception:
+            pass
 
-    except Exception as e:
-        print(f"Komoe detection failed: {e}")
+    for drive in ["C:", "D:", "E:", "F:"]:
+        cand = os.path.join(drive, os.sep, "Kakao Games", "Umamusume")
+        if os.path.isdir(cand):
+            return cand
 
     return None
         
@@ -188,55 +305,255 @@ def find_game_path(app_id):
 
     for lib in libraries:
         manifest = os.path.join(lib, "steamapps", f"appmanifest_{app_id}.acf")
-
         if os.path.exists(manifest):
-            with open(manifest, "r", encoding="utf-8") as f:
-                data = vdf.load(f)
+            try:
+                with open(manifest, "r", encoding="utf-8") as f:
+                    data = vdf.load(f)
 
-            installdir = data.get("AppState", {}).get("installdir")
-            if installdir:
-                return os.path.join(lib, "steamapps", "common", installdir)
+                installdir = data.get("AppState", {}).get("installdir")
+                if installdir:
+                    full_path = os.path.join(lib, "steamapps", "common", installdir)
+                    if os.path.isdir(full_path):
+                        return full_path
+            except Exception:
+                pass
 
     return None
 
-def load_settings():
+import json
+
+# ---------------------------
+# Fallback
+# ---------------------------
+
+GAME_PATH_JSON = os.path.join("UMML_Data", "GamePath.json")
+
+def normalize_path(path):
+    if not path:
+        return None
+
+    path = path.strip().strip('"').strip("'")
+    path = path.replace("/", os.sep).replace("\\", os.sep)
+    path = os.path.normpath(path)
+
+    return path
+
+def fallback_path(platform, base_path=None, game_dir=None):
+    """
+    Load saved paths if auto-detection failed or meta is missing.
+    """
+
+    if not os.path.isfile(GAME_PATH_JSON):
+        return base_path, game_dir
+
+    try:
+        with open(GAME_PATH_JSON, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        info = data.get(platform, {})
+
+        # Persistent folder
+        base_has_meta = os.path.isfile(os.path.join(base_path, "meta")) if (base_path and os.path.isdir(base_path)) else False
+        if not base_path or not os.path.isdir(base_path) or not base_has_meta:
+            saved = normalize_path(info.get("Persistent_dir", ""))
+            if saved and os.path.isdir(saved):
+                saved_has_meta = os.path.isfile(os.path.join(saved, "meta"))
+                if not base_path or not os.path.isdir(base_path) or saved_has_meta:
+                    base_path = saved
+
+        # Game folder
+        if not game_dir or not os.path.isdir(game_dir):
+            saved = normalize_path(info.get("Game_dir", ""))
+            if saved and os.path.isdir(saved):
+                game_dir = saved
+
+    except Exception as e:
+        print(f"Failed to read GamePath.json: {e}")
+
+    return base_path, game_dir
+    
+def save_default_platform(platform):
+    try:
+        data = {}
+        if os.path.isfile(GAME_PATH_JSON):
+            with open(GAME_PATH_JSON, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        data["SelectedPlatform"] = platform
+        os.makedirs(os.path.dirname(GAME_PATH_JSON), exist_ok=True)
+        with open(GAME_PATH_JSON, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Failed to save default platform: {e}")
+
+def get_default_platform():
+    try:
+        if os.path.isfile(GAME_PATH_JSON):
+            with open(GAME_PATH_JSON, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("SelectedPlatform")
+    except Exception:
+        pass
+    return None
+
+def select_platform_dialog(parent_root, detected_platforms, all_platforms, default_platform=None):
+    selected_platform = [default_platform if default_platform in all_platforms else (detected_platforms[0] if detected_platforms else all_platforms[0])]
+    cancelled = [False]
+
+    dialog = tk.Toplevel(parent_root)
+    dialog.title("Select Game Platform")
+    dialog.resizable(False, False)
+    dialog.transient(parent_root)
+    dialog.grab_set()
+
+    w, h = 460, 360
+    ws = dialog.winfo_screenwidth()
+    hs = dialog.winfo_screenheight()
+    x = max(0, int((ws / 2) - (w / 2)))
+    y = max(0, int((hs / 2) - (h / 2)))
+    dialog.geometry(f"{w}x{h}+{x}+{y}")
+
+    header_frame = tk.Frame(dialog, padx=15, pady=10)
+    header_frame.pack(fill=tk.X)
+    tk.Label(
+        header_frame,
+        text="Umamusume Pretty Derby",
+        font=("Helvetica", 12, "bold")
+    ).pack(anchor="w")
+    tk.Label(
+        header_frame,
+        text="Select the game version you want to manage:",
+        fg="#555555"
+    ).pack(anchor="w")
+
+    body_frame = tk.LabelFrame(dialog, text=" Available Platforms ", padx=15, pady=10)
+    body_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+
+    var = tk.StringVar(value=selected_platform[0])
+
+    for plat in all_platforms:
+        is_detected = plat in detected_platforms
+        status_text = " [Detected]" if is_detected else ""
+        fg_color = "#007700" if is_detected else "#777777"
+
+        row_frame = tk.Frame(body_frame)
+        row_frame.pack(fill=tk.X, pady=3, anchor="w")
+
+        rb = tk.Radiobutton(
+            row_frame,
+            text=plat,
+            variable=var,
+            value=plat,
+            font=("Helvetica", 10, "bold" if is_detected else "normal")
+        )
+        rb.pack(side=tk.LEFT)
+
+        if status_text:
+            tk.Label(row_frame, text=status_text, fg=fg_color, font=("Helvetica", 8, "italic")).pack(side=tk.LEFT, padx=5)
+
+    remember_var = tk.BooleanVar(value=False)
+    remember_chk = tk.Checkbutton(
+        dialog,
+        text="Remember my choice (don't ask on startup)",
+        variable=remember_var
+    )
+    remember_chk.pack(anchor="w", padx=15, pady=5)
+
+    btn_frame = tk.Frame(dialog, padx=15, pady=10)
+    btn_frame.pack(fill=tk.X)
+
+    def on_confirm():
+        selected_platform[0] = var.get()
+        if remember_var.get():
+            save_default_platform(selected_platform[0])
+        dialog.destroy()
+
+    def on_cancel():
+        cancelled[0] = True
+        dialog.destroy()
+
+    dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+
+    launch_btn = tk.Button(btn_frame, text="Launch", width=12, bg="#4CAF50", fg="white", font=("Helvetica", 9, "bold"), command=on_confirm)
+    launch_btn.pack(side=tk.RIGHT, padx=5)
+
+    cancel_btn = tk.Button(btn_frame, text="Exit", width=10, command=on_cancel)
+    cancel_btn.pack(side=tk.RIGHT)
+
+    parent_root.wait_window(dialog)
+
+    if cancelled[0]:
+        sys.exit(0)
+
+    return selected_platform[0]
+    
+def load_settings(parent_root=None, force_platform=None):
+    if parent_root is None:
+        temp_root = tk.Tk()
+        temp_root.withdraw()
+        parent_root = temp_root
+
+    ALL_PLATFORMS = ["Steam Global", "Steam Japan", "DMM", "Komoe", "Kakao"]
+
     steam_game_path_jpn = find_game_path(3564400)
     steam_game_path_en = find_game_path(3224770)
     dmm_game_path_jpn = find_dmm_umamusume()
     komoe_game_path = find_komoe_umamusume()
+    kakao_game_path = find_kakao_umamusume()
     
-    game_dir = None
-    base_path = None
-    meta_path_pth = None
-    region = None
-    platform = None
+    # --- Steam Global (New location vs Old LocalLow location) ---
     base_path_steam_en = None
-    # New location
+    new_persistent_en = None
     if steam_game_path_en:
-        persistent = (
-            Path(steam_game_path_en)
-            / "UmamusumePrettyDerby_Data"
-            / "Persistent"
-        )
+        std_p = Path(steam_game_path_en) / "UmamusumePrettyDerby_Data" / "Persistent"
+        if std_p.is_dir():
+            new_persistent_en = std_p
+        else:
+            try:
+                for entry in os.scandir(steam_game_path_en):
+                    if entry.is_dir() and entry.name.lower().endswith("_data"):
+                        sub_p = Path(entry.path) / "Persistent"
+                        if sub_p.is_dir():
+                            new_persistent_en = sub_p
+                            break
+            except Exception:
+                pass
+        if new_persistent_en is None:
+            new_persistent_en = Path(steam_game_path_en) / "UmamusumePrettyDerby_Data" / "Persistent"
 
-        if (persistent / "meta").is_file():
-            base_path_steam_en = persistent
+    old_persistent_en = None
+    locallow_root = Path.home() / "AppData" / "LocalLow" / "Cygames"
+    if locallow_root.is_dir():
+        for sub_name in ["UmamusumePrettyDerby", "umamusumeprettyderby", "umamusume", "Umamusume"]:
+            cand = locallow_root / sub_name
+            if (cand / "meta").is_file():
+                old_persistent_en = cand
+                break
+        if old_persistent_en is None:
+            cand = locallow_root / "UmamusumePrettyDerby"
+            if cand.is_dir():
+                old_persistent_en = cand
 
-    # Old location fallback
-    if base_path_steam_en is None:
-        locallow = (
-            Path.home()
-            / "AppData"
-            / "LocalLow"
-            / "Cygames"
-            / "umamusume"
-        )
+    new_has_meta = new_persistent_en is not None and (new_persistent_en / "meta").is_file()
+    old_has_meta = old_persistent_en is not None and (old_persistent_en / "meta").is_file()
 
-        if (locallow / "meta").is_file():
-            base_path_steam_en = locallow
+    if new_has_meta and old_has_meta:
+        try:
+            new_mtime = (new_persistent_en / "meta").stat().st_mtime
+            old_mtime = (old_persistent_en / "meta").stat().st_mtime
+            base_path_steam_en = new_persistent_en if new_mtime >= old_mtime else old_persistent_en
+        except Exception:
+            base_path_steam_en = new_persistent_en
+    elif new_has_meta:
+        base_path_steam_en = new_persistent_en
+    elif old_has_meta:
+        base_path_steam_en = old_persistent_en
+    elif new_persistent_en and new_persistent_en.is_dir():
+        base_path_steam_en = new_persistent_en
+    elif old_persistent_en and old_persistent_en.is_dir():
+        base_path_steam_en = old_persistent_en
+    else:
+        base_path_steam_en = new_persistent_en
 
-    print(f"Steam EN path: {base_path_steam_en}")
-    
     base_path_steam_jp = None
     if steam_game_path_jpn:
         base_path_steam_jp = (
@@ -245,7 +562,6 @@ def load_settings():
             / "Persistent"
         )
         
-    print(f"Steam JP path: {base_path_steam_jp}")
     base_path_dmm_jp = None
     if dmm_game_path_jpn:
         base_path_dmm_jp = (
@@ -254,8 +570,6 @@ def load_settings():
             / "Persistent"
         )
         
-    print(f"DMM Game path: {dmm_game_path_jpn}")
-    
     base_path_komoe_tw = None
     if komoe_game_path:
         base_path_komoe_tw = (
@@ -263,126 +577,126 @@ def load_settings():
             / "komoeumamusume_Data"
             / "Persistent"
         )
-        
-    print(f"Komoe Game path: {komoe_game_path}")
-    
-    root = tk.Tk()
-    root.withdraw()
 
-    choice = messagebox.askyesnocancel(
-        "Platform",
-        "Are you using the Steam version?"
-    )
+    base_path_kakao = None
+    if kakao_game_path:
+        for cand_name in ["umamusume_Data", "Umamusume_Data"]:
+            p = Path(kakao_game_path) / cand_name / "Persistent"
+            if p.is_dir():
+                base_path_kakao = p
+                break
+        if base_path_kakao is None:
+            base_path_kakao = Path(kakao_game_path) / "umamusume_Data" / "Persistent"
 
-    if choice is None:
-        root.destroy()
-        sys.exit(0)
+    # Identify detected platforms
+    detected_platforms = []
+    if (steam_game_path_en and os.path.isdir(steam_game_path_en)) or (base_path_steam_en and os.path.isfile(os.path.join(base_path_steam_en, "meta"))):
+        detected_platforms.append("Steam Global")
+    if (steam_game_path_jpn and os.path.isdir(steam_game_path_jpn)) or (base_path_steam_jp and os.path.isfile(os.path.join(base_path_steam_jp, "meta"))):
+        detected_platforms.append("Steam Japan")
+    if (dmm_game_path_jpn and os.path.isdir(dmm_game_path_jpn)) or (base_path_dmm_jp and os.path.isfile(os.path.join(base_path_dmm_jp, "meta"))):
+        detected_platforms.append("DMM")
+    if (komoe_game_path and os.path.isdir(komoe_game_path)) or (base_path_komoe_tw and os.path.isfile(os.path.join(base_path_komoe_tw, "meta"))):
+        detected_platforms.append("Komoe")
+    if (kakao_game_path and os.path.isdir(kakao_game_path)) or (base_path_kakao and os.path.isfile(os.path.join(base_path_kakao, "meta"))):
+        detected_platforms.append("Kakao")
 
-    if choice:
-        steam_region = messagebox.askyesnocancel(
-            "Steam Region",
-            "Select Steam version:\n\n"
-            "Yes → Global\n"
-            "No  → Japan\n"
-            "Cancel → Exit"
-        )
-
-        if steam_region is None:
-            root.destroy()
-            sys.exit(0)
-
-        if steam_region:
-            platform = "Steam Global"
-        else:
-            platform = "Steam Japan"
-
+    if force_platform and force_platform in ALL_PLATFORMS:
+        platform = force_platform
     else:
-        dmm = messagebox.askyesnocancel(
-            "Platform",
-            "Are you using the DMM version?"
-        )
-
-        if dmm is None:
-            root.destroy()
-            sys.exit(0)
-
-        if dmm:
-            platform = "DMM"
-
+        saved_plat = get_default_platform()
+        if saved_plat in ALL_PLATFORMS:
+            platform = saved_plat
+            print(f"[Platform] Using saved platform: {platform}")
+        elif len(detected_platforms) == 1:
+            platform = detected_platforms[0]
+            print(f"[Platform] Only 1 game platform detected ({platform}). Auto-selected.")
         else:
-            asia = messagebox.askyesnocancel(
-                "Platform",
-                "Select version:\n\n"
-                "Yes → Kakao\n"
-                "No  → Komoe\n"
-                "Cancel → Exit"
+            platform = select_platform_dialog(
+                parent_root,
+                detected_platforms=detected_platforms,
+                all_platforms=ALL_PLATFORMS,
+                default_platform=detected_platforms[0] if detected_platforms else "Steam Japan"
             )
 
-            if asia is None:
-                root.destroy()
-                sys.exit(0)
-
-            if asia:
-                platform = "Kakao"
-            else:
-                platform = "Komoe"
-    root.destroy()
-    
+    # Resolve selected platform paths
     if platform == "Steam Global":
         base_path = resolve_case_sensitive_path(base_path_steam_en)
         game_dir = resolve_case_sensitive_path(steam_game_path_en)
-        meta_path_pth = os.path.join(base_path, "meta")
+        base_path, game_dir = fallback_path(platform, base_path, game_dir)
+        meta_path_pth = os.path.join(base_path, "meta") if base_path else None
         region = "Global"
 
     elif platform == "Steam Japan":
         base_path = resolve_case_sensitive_path(base_path_steam_jp)
         game_dir = resolve_case_sensitive_path(steam_game_path_jpn)
-        meta_path_pth = os.path.join(base_path, "meta")
+        base_path, game_dir = fallback_path(platform, base_path, game_dir)
+        meta_path_pth = os.path.join(base_path, "meta") if base_path else None
         region = "Japan"
 
     elif platform == "DMM":
         base_path = resolve_case_sensitive_path(base_path_dmm_jp)
         game_dir = resolve_case_sensitive_path(dmm_game_path_jpn)
-        meta_path_pth = os.path.join(base_path, "meta")
+        base_path, game_dir = fallback_path(platform, base_path, game_dir)
+        meta_path_pth = os.path.join(base_path, "meta") if base_path else None
         region = "Japan"
 
     elif platform == "Kakao":
-        # TODO implement
-        #base_path = resolve_case_sensitive_path(base_path_dmm_jp)
-        #game_dir = Path(komoe_game_path) / "komoemumamusume Game"
+        base_path = resolve_case_sensitive_path(base_path_kakao)
+        game_dir = resolve_case_sensitive_path(kakao_game_path)
+        base_path, game_dir = fallback_path(platform, base_path, game_dir)
+        if base_path and os.path.isfile(os.path.join(base_path, "meta")):
+            meta_path_pth = os.path.join(base_path, "meta")
+        elif game_dir and os.path.isfile(os.path.join(game_dir, "meta")):
+            meta_path_pth = os.path.join(game_dir, "meta")
+        else:
+            meta_path_pth = os.path.join(base_path, "meta") if base_path else None
         region = "Korea"
 
     elif platform == "Komoe":
         base_path = resolve_case_sensitive_path(base_path_komoe_tw)
         game_dir = resolve_case_sensitive_path(komoe_game_path)
-        meta_path_pth = os.path.join(game_dir, "meta")
-        region = "Taiwan"     
-        
-    # --------------------
+        base_path, game_dir = fallback_path(platform, base_path, game_dir)
+        if base_path and os.path.isfile(os.path.join(base_path, "meta")):
+            meta_path_pth = os.path.join(base_path, "meta")
+        elif game_dir and os.path.isfile(os.path.join(game_dir, "meta")):
+            meta_path_pth = os.path.join(game_dir, "meta")
+        else:
+            meta_path_pth = os.path.join(game_dir, "meta") if game_dir else None
+        region = "Taiwan"
+    else:
+        raise ValueError(f"Unknown platform: {platform}")
+
     # Validate
-    # --------------------
     if not base_path or not os.path.isdir(base_path):
         messagebox.showerror(
             "Game Not Found",
-            f"Selected {region} version was not found.\n\n"
-            "Please make sure the game is installed and run at least once."
+            f"Selected {platform} ({region}) version was not found.\n\n"
+            "Please make sure the game is installed and run at least once.\n"
+            "If detection still fails, set the correct path in UMML_Data/GamePath.json."
         )
         sys.exit(1)
+
     if meta_path_pth is None or not os.path.isfile(meta_path_pth):
         messagebox.showerror(
             "Meta Not Found",
-            f"Meta database not found:\n{meta_path_pth}"
+            f"Meta database not found:\n{meta_path_pth}\n\n"
+            "Please make sure the game has finished downloading its initial data,\n"
+            "or set the correct Persistent_dir in UMML_Data/GamePath.json."
         )
         sys.exit(1)
-    if region == "Taiwan":
+
+    if region in ("Taiwan", "Korea") and not (base_path and os.path.isdir(os.path.join(base_path, "dat"))):
         dat = os.path.join(game_dir, "dat")
         backup = os.path.join(game_dir, "dat.backup")
     else:
         dat = os.path.join(base_path, "dat")
         backup = os.path.join(base_path, "dat.backup")
-        
+
+    print(f"[Platform] Active: {platform} | Region: {region}")
     print(f"Game Directory path: {game_dir}")
-    return dat, backup, region, game_dir, meta_path_pth
+    print(f"Base Directory path: {base_path}")
+    return dat, backup, region, game_dir, meta_path_pth, platform
     
 # using ref from noccu/hachimi-tools
 def load_or_decrypt_meta_simple(dat_path, meta_path, region):
@@ -417,19 +731,20 @@ def load_or_decrypt_meta_simple(dat_path, meta_path, region):
 
     def make_cache_id(path):
         """
-        Fast fingerprint:
-        filesize + modified time + first 1MB hash
+        Fast fingerprint based on content and size (not mtime):
+        filesize + first 1MB hash + last 1MB hash
         """
         stat = os.stat(path)
-
         h = hashlib.sha1()
-
+        h.update(str(stat.st_size).encode())
         with open(path, "rb") as f:
-            h.update(f.read(1024 * 1024))  # first 1MB only
+            h.update(f.read(1024 * 1024))  # first 1MB
+            if stat.st_size > 1024 * 1024:
+                f.seek(max(0, stat.st_size - 1024 * 1024))
+                h.update(f.read(1024 * 1024))  # last 1MB
 
-        digest = h.hexdigest()[:12]
-
-        return f"{stat.st_size}_{int(stat.st_mtime)}_{digest}"
+        digest = h.hexdigest()[:16]
+        return f"{stat.st_size}_{digest}"
 
     def is_valid_sqlite(path):
         if not os.path.isfile(path):
@@ -490,6 +805,11 @@ def load_or_decrypt_meta_simple(dat_path, meta_path, region):
     # ---------------- VALID CACHE ---------------- #
     if is_valid_sqlite(meta_dec):
         print("Using cached decrypted meta")
+        try:
+            with sqlite3.connect(meta_dec) as _idx_conn:
+                _idx_conn.execute("CREATE INDEX IF NOT EXISTS idx_a_h ON a(h)")
+        except Exception:
+            pass
         return meta_dec
 
     print("Decrypting meta database...")
@@ -515,12 +835,17 @@ def load_or_decrypt_meta_simple(dat_path, meta_path, region):
     if not is_valid_sqlite(meta_dec):
         raise RuntimeError("Decrypted meta validation failed")
 
+    try:
+        with sqlite3.connect(meta_dec) as _idx_conn:
+            _idx_conn.execute("CREATE INDEX IF NOT EXISTS idx_a_h ON a(h)")
+    except Exception:
+        pass
+
     return meta_dec
     
 class ModLoaderGUI:    
     def load_hachimi_dict(self):
         path = os.path.join(self.game_dir, "hachimi", "localized_data", "text_data_dict.json")
-        #print(f"{path}")
         if not os.path.isfile(path):
             self.hachimi_dict = {}
             return
@@ -533,47 +858,100 @@ class ModLoaderGUI:
             
     def __init__(self, root):
         self.root = root
-        self.root.title("UMML GUI")
 
-        self.dat_path, self.backup_path, self.region, self.game_dir, self.meta_path_pth = load_settings()
+        self.dat_path, self.backup_path, self.region, self.game_dir, self.meta_path_pth, self.platform = load_settings(parent_root=self.root)
+        self.root.title(f"UMML GUI - {self.platform}")
+
         # bind function (optional but matches your request)
         self.meta_path_load = load_or_decrypt_meta_simple
         # resolve meta path ONCE at startup
-        self.meta_path = self.meta_path_load(self.dat_path, self.meta_path_pth, self.region)   
-        #print(f"[Meta] Using meta DB: {self.meta_path}")
+        self.meta_path = self.meta_path_load(self.dat_path, self.meta_path_pth, self.region)
         self.mod_path = tk.StringVar()
         self.title_text = tk.StringVar()
         self.version_text = tk.StringVar()
         self.load_hachimi_dict()
         self.create_widgets()
 
+    def switch_game_platform(self):
+        ALL_PLATFORMS = ["Steam Global", "Steam Japan", "DMM", "Komoe", "Kakao"]
+        new_plat = select_platform_dialog(
+            self.root,
+            detected_platforms=[],
+            all_platforms=ALL_PLATFORMS,
+            default_platform=self.platform
+        )
+        if new_plat and new_plat != self.platform:
+            try:
+                self.dat_path, self.backup_path, self.region, self.game_dir, self.meta_path_pth, self.platform = load_settings(
+                    parent_root=self.root, force_platform=new_plat
+                )
+                self.meta_path = self.meta_path_load(self.dat_path, self.meta_path_pth, self.region)
+                self.root.title(f"UMML GUI - {self.platform}")
+                self.create_widgets()
+                messagebox.showinfo("Platform Changed", f"Successfully switched to {self.platform} ({self.region}).")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to switch platform:\n{e}")
+
+    def warn_misc_unsupported(self, callback):
+        def wrapper(*args, **kwargs):
+            master_db = os.path.join(os.path.dirname(self.dat_path), "master", "master.mdb")
+            if os.path.isfile(master_db) and is_file_in_use(master_db):
+                messagebox.showwarning(
+                    "master.mdb In Use",
+                    "'master.mdb' is currently in use by the game.\n\n"
+                    "Please return to the Title screen (or close the game), then try again."
+                )
+                return
+            if messagebox.askokcancel(
+                "Warning: No Longer Supported",
+                "The Misc section is no longer supported and may be unstable.\n\n"
+                "Do you want to continue?"
+            ):
+                return callback(*args, **kwargs)
+        return wrapper
+
     def create_widgets(self):
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
+
+        # Platform menu
+        platform_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label=f"Platform ({self.region})", menu=platform_menu)
+        platform_menu.add_command(
+            label=f"Active: {self.platform}",
+            state="disabled"
+        )
+        platform_menu.add_separator()
+        platform_menu.add_command(
+            label="Switch Game Platform...",
+            command=self.switch_game_platform
+        )
+
         misc_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Misc", menu=misc_menu)
+        menubar.add_cascade(label="Misc (Unsupported)", menu=misc_menu)
+
+        misc_menu.add_command(
+            label="⚠️ Misc is no longer supported & unstable",
+            state="disabled"
+        )
+        misc_menu.add_separator()
+
         character_menu = tk.Menu(misc_menu, tearoff=0)
         misc_menu.add_cascade(label="Character", menu=character_menu)
-        asset_menu = tk.Menu(misc_menu, tearoff=0)
-        misc_menu.add_cascade(label="Asset", menu=asset_menu)
 
-        asset_menu.add_command(
-            label="Clean Up",
-            command=self.clean_unused_assets
-        )
         character_menu.add_command(
             label="Attribute",
-            command=self.open_chara_settings
+            command=self.warn_misc_unsupported(self.open_chara_settings)
         )
 
         character_menu.add_command(
             label="Personality",
-            command=self.open_personality_settings
+            command=self.warn_misc_unsupported(self.open_personality_settings)
         )
 
         character_menu.add_command(
             label="Dress",
-            command=self.open_dress_settings
+            command=self.warn_misc_unsupported(self.open_dress_settings)
         )
         
         single_mode_menu = tk.Menu(misc_menu, tearoff=0)
@@ -581,14 +959,19 @@ class ModLoaderGUI:
 
         single_mode_menu.add_command(
             label="Training",
-            command=self.open_training_settings
+            command=self.warn_misc_unsupported(self.open_training_settings)
         )
-        experimental_menu = tk.Menu(misc_menu, tearoff=0)
-        misc_menu.add_cascade(label="EXPERIMENTAL", menu=experimental_menu)
+        dress_tweak_menu = tk.Menu(misc_menu, tearoff=0)
+        misc_menu.add_cascade(label="Dress", menu=dress_tweak_menu)
 
-        experimental_menu.add_command(
-            label="Merge Translation from Global to Japanese",
-            command=self.force_translate_english
+        dress_tweak_menu.add_command(
+            label="Swap Alt to Main",
+            command=self.warn_misc_unsupported(self.swap_alt_to_main)
+        )
+        
+        dress_tweak_menu.add_command(
+            label="Restore Alt",
+            command=self.warn_misc_unsupported(self.restore_alt)
         )
         
         modelreplace_menu = tk.Menu(misc_menu, tearoff=0)
@@ -596,7 +979,7 @@ class ModLoaderGUI:
 
         modelreplace_menu.add_command(
             label="Swap Character",
-            command=self.open_swap_character
+            command=self.warn_misc_unsupported(self.open_swap_character)
         )
 
         story_menu = tk.Menu(misc_menu, tearoff=0)
@@ -604,7 +987,7 @@ class ModLoaderGUI:
 
         story_menu.add_command(
             label="Concert",
-            command=self.open_story_concert
+            command=self.warn_misc_unsupported(self.open_story_concert)
         )
 
         mod_frame = tk.LabelFrame(self.root, text="Mod Loader")
@@ -613,6 +996,11 @@ class ModLoaderGUI:
         tk.Button(mod_frame, text="Browse", command=self.browse_folder).pack(side="left")
         tk.Button(mod_frame, text="Reload", command=self.reload).pack(side="left", padx=5)
         tk.Button(mod_frame, text="Preview", command=self.preview_assets).pack(side="left", padx=5)
+        tk.Button(
+            mod_frame,
+            text="How do I install a mod?",
+            command=self.how_do_i_install_mod
+        ).pack(side="left", padx=5)
         info_frame = tk.LabelFrame(self.root, text="Information")
         info_frame.pack(fill="x", padx=10, pady=5)
         tk.Label(info_frame, textvariable=self.title_text).pack(anchor="w")
@@ -622,18 +1010,16 @@ class ModLoaderGUI:
 
         control_frame = tk.LabelFrame(self.root, text="Controls")
         control_frame.pack(fill="x", padx=10, pady=5)
-        self.assets_load_btn = tk.Button(control_frame, text="Load Assets", state="disabled", command=self.load_assets)
+        self.assets_load_btn = tk.Button(control_frame, text="Install Mod", state="disabled", command=self.load_assets)
         self.assets_load_btn.pack(side="left", padx=5)
-        self.assets_load_raw_btn = tk.Button(control_frame, text="Load Assets (manual)", command=self.load_assets_manual)
+        self.assets_load_raw_btn = tk.Button(control_frame, text="Import Asset Folder", command=self.load_assets_manual)
         self.assets_load_raw_btn.pack(side="left", padx=5)
-        #self.assets_unload_btn = tk.Button(control_frame, text="Unload Assets", state="disabled", command=self.unload_assets)
-        #self.assets_unload_btn.pack(side="left", padx=5)
-        tk.Label(control_frame, text=f"Version : {modloader_version}").pack(side="right")
-        tk.Label(control_frame, text=f"Region : {self.region} |").pack(side="right")
         self.restore_btn = tk.Button(control_frame, text="Restore Assets", command=self.restore_original_assets)
         self.restore_btn.pack(side="left", padx=5)
-        self.delete_db_btn = tk.Button(control_frame, text="Delete Database", command=self.delete_master_db)
-        self.delete_db_btn.pack(side="left", padx=5)
+        self.clean_btn = tk.Button(control_frame, text="Clean Up Assets", command=self.clean_unused_assets)
+        self.clean_btn.pack(side="left", padx=5)
+        tk.Label(control_frame, text=f"Version : {modloader_version}").pack(side="right")
+        tk.Label(control_frame, text=f"Region : {self.region} |").pack(side="right")
         progress_frame = tk.LabelFrame(self.root, text="Progress")
         progress_frame.pack(fill="x", padx=10, pady=5)
         self.progress_label = tk.Label(progress_frame, text="Waiting")
@@ -646,80 +1032,137 @@ class ModLoaderGUI:
             messagebox.showerror("Error", "Game data folder not found.")
             return
 
+        if not hasattr(self, "meta_path") or not os.path.isfile(self.meta_path):
+            messagebox.showerror("Error", "Meta database file not found.")
+            return
+
+        self.clean_btn.config(state="disabled")
         self.progress_label.config(text="Scanning assets...")
         self.root.update_idletasks()
 
-        # Scan every file in dat
-        dat_assets = {
-            p.replace("\\", "/")
-            for p in self.scan_full_path(self.dat_path)
-        }
-
-        # Read every valid hash from meta
-        valid_assets = set()
+        def format_size(bytes_size):
+            size = float(bytes_size)
+            for unit in ["B", "KB", "MB", "GB", "TB"]:
+                if size < 1024.0:
+                    return f"{size:.1f} {unit}"
+                size /= 1024.0
+            return f"{size:.1f} PB"
 
         try:
-            conn = sqlite3.connect(self.meta_path)
-            c = conn.cursor()
-
-            c.execute("SELECT h FROM a")
-            for (h,) in c.fetchall():
-                valid_assets.add(f"{h[:2]}/{h}")
-
-            conn.close()
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to read meta database.\n\n{e}")
-            return
-
-        # Files not referenced by meta
-        orphan_assets = sorted(dat_assets - valid_assets)
-
-        self.progress_label.config(text="Waiting")
-
-        if not orphan_assets:
-            messagebox.showinfo(
-                "Clean Up",
-                "No unused assets were found."
-            )
-            return
-
-        if not messagebox.askyesno(
-            "Clean Up",
-            f"Found {len(orphan_assets)} unused asset(s).\n\n"
-            "These files are not referenced by the current meta database.\n"
-            "They are usually leftovers from old game updates or removed mods.\n\n"
-            "Delete them?"
-        ):
-            return
-
-        self.progress_bar["maximum"] = len(orphan_assets)
-        self.progress_bar["value"] = 0
-
-        deleted = 0
-        failed = 0
-
-        for i, rel_path in enumerate(orphan_assets, start=1):
+            # 1. Read every valid hash from meta
+            valid_assets = set()
             try:
-                os.remove(os.path.join(self.dat_path, rel_path))
-                deleted += 1
-            except Exception:
-                failed += 1
+                conn = sqlite3.connect(self.meta_path)
+                c = conn.cursor()
+                c.execute("SELECT h FROM a")
+                for (h,) in c.fetchall():
+                    if h:
+                        valid_assets.add(f"{h[:2]}/{h}")
+                conn.close()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to read meta database.\n\n{e}")
+                return
 
-            self.progress_label.config(
-                text=f"Deleting {i} / {len(orphan_assets)}"
+            # Safety Guard: game normally has tens of thousands of assets
+            if len(valid_assets) < 500:
+                messagebox.showerror(
+                    "Safety Abort",
+                    "Meta database returned insufficient valid assets.\n"
+                    "Clean up was aborted to protect your game installation from data loss."
+                )
+                return
+
+            # 2. Scan every file in dat (only match valid 'xx/hash' structure)
+            dat_assets = set()
+            for p in self.scan_full_path(self.dat_path):
+                norm_p = p.replace("\\", "/")
+                parts = norm_p.split("/")
+                if len(parts) == 2 and len(parts[0]) == 2:
+                    dat_assets.add(norm_p)
+
+            # 3. Find orphan assets
+            orphan_assets = sorted(dat_assets - valid_assets)
+
+            if not orphan_assets:
+                messagebox.showinfo("Clean Up", "No unused assets were found.")
+                return
+
+            # 4. Calculate total disk size
+            orphan_files_info = []
+            total_bytes = 0
+            for rel_path in orphan_assets:
+                full_path = os.path.join(self.dat_path, rel_path)
+                try:
+                    sz = os.path.getsize(full_path)
+                except Exception:
+                    sz = 0
+                orphan_files_info.append((rel_path, full_path, sz))
+                total_bytes += sz
+
+            size_str = format_size(total_bytes)
+
+            if not messagebox.askyesno(
+                "Clean Up Assets",
+                f"Found {len(orphan_files_info)} unused asset(s) (~{size_str}).\n\n"
+                "These files are no longer referenced by the current meta database\n"
+                "(usually leftovers from game updates or removed mods).\n\n"
+                "Permanently delete them?"
+            ):
+                return
+
+            self.progress_bar["maximum"] = len(orphan_files_info)
+            self.progress_bar["value"] = 0
+
+            deleted = 0
+            failed = 0
+            freed_bytes = 0
+            total_count = len(orphan_files_info)
+            update_interval = max(1, total_count // 100)
+
+            for i, (rel_path, full_path, sz) in enumerate(orphan_files_info, start=1):
+                try:
+                    os.remove(full_path)
+                    deleted += 1
+                    freed_bytes += sz
+                    parent_dir = os.path.dirname(full_path)
+                    if os.path.isdir(parent_dir) and not os.listdir(parent_dir):
+                        try:
+                            os.rmdir(parent_dir)
+                        except Exception:
+                            pass
+                except Exception:
+                    failed += 1
+
+                # Throttled UI update to prevent freeze and optimize speed
+                if i % update_interval == 0 or i == total_count:
+                    self.progress_label.config(text=f"Deleting {i} / {total_count}")
+                    self.progress_bar["value"] = i
+                    self.root.update_idletasks()
+
+            freed_str = format_size(freed_bytes)
+            messagebox.showinfo(
+                "Done",
+                f"Clean up finished!\n\n"
+                f"Deleted: {deleted} asset(s) (~{freed_str} freed)\n"
+                f"Failed: {failed} asset(s)"
             )
-            self.progress_bar["value"] = i
-            self.root.update_idletasks()
-
-        self.progress_label.config(text="Waiting")
-
+        finally:
+            self.clean_btn.config(state="normal")
+            self.progress_label.config(text="Waiting")
+    def how_do_i_install_mod(self):
         messagebox.showinfo(
-            "Done",
-            f"Deleted {deleted} unused asset(s).\n"
-            f"Failed to delete {failed} asset(s)."
+            "How do I install a mod?",
+            "Standard Mod\n"
+            "1. Click Browse.\n"
+            "2. Select the mod folder.\n"
+            "3. Click Install Mod.\n\n"
+            "Other Mod / Optional Mod\n"
+            "If you're installing a mod that isn't packaged for UMML, use Import Asset Folder instead.\n\n"
+            "1. Click Import Asset Folder.\n"
+            "2. Select the mod folder.\n"
+            "3. UMML will automatically detect the mod format and your game platform.\n"
+            "4. Review the detected settings, then click Yes to load the assets."
         )
-
     def hachimi_translation_redirect(self, category, index, default_text):
         if not hasattr(self, "hachimi_dict") or not self.hachimi_dict:
             return default_text
@@ -730,7 +1173,7 @@ class ModLoaderGUI:
         return self.hachimi_dict.get(cat, {}).get(idx, default_text)
         
     # from kairusds/umamusu-utils
-    def decrypt_assets_internal(self, src_root, dst_root, use_hash=False, filter_path=None):
+    def decrypt_assets_internal(self, src_root, dst_root, use_hash=False, filter_path=None, direct_to_dat=False):
         AB_KEY = b'\x53\x2B\x46\x31\xE4\xA7\xB9\x47\x3E\x7C\xFB'
 
         def derive_asset_key(key_long):
@@ -755,142 +1198,169 @@ class ModLoaderGUI:
             raise RuntimeError("Meta database not found")
 
         os.makedirs(dst_root, exist_ok=True)
+        if direct_to_dat:
+            os.makedirs(self.backup_path, exist_ok=True)
 
         conn = sqlite3.connect(meta_db)
-        c = conn.cursor()
-        
-        c.execute("PRAGMA table_info(a)")
-        columns = {row[1] for row in c.fetchall()}
-        has_encrypt = "e" in columns
-        
-        # DRIVE FROM MOD FILES
-        all_paths = list(self.scan_full_path(src_root))
-
-        # ---------------- FILTER ----------------
-        if filter_path:
-            filtered = []
-            for p in all_paths:
-                parts = p.replace("\\", "/").split("/")
-                if filter_path in parts:
-                    filtered.append(p)
-            all_paths = filtered
-            #print(f"filtered: {all_paths}")
+        try:
+            c = conn.cursor()
             
-        total = len(all_paths)
-        self.progress_bar["maximum"] = total
-        self.progress_bar["value"] = 0
+            c.execute("PRAGMA table_info(a)")
+            columns = {row[1] for row in c.fetchall()}
+            has_encrypt = "e" in columns
+            
+            # DRIVE FROM MOD FILES
+            all_paths = list(self.scan_full_path(src_root))
 
-        decoded_count = 0
-        missing_meta = 0
+            # ---------------- FILTER ----------------
+            if filter_path:
+                filtered = []
+                for p in all_paths:
+                    parts = p.replace("\\", "/").split("/")
+                    if filter_path in parts:
+                        filtered.append(p)
+                all_paths = filtered
 
-        for i, rel_path in enumerate(all_paths, start=1):
-            input_path = os.path.join(src_root, rel_path)
-            self.progress_label.config(
-                text=f"Encrypting Asset {i} / {total}"
-            )
-            self.progress_bar["value"] = i
-            self.root.update_idletasks()
+            # ---------------- VALIDATE ASSET FILES UPFRONT ----------------
+            if not use_hash:
+                valid_paths = []
+                for p in all_paths:
+                    full_p = os.path.join(src_root, p)
+                    if p.lower().endswith((".acb", ".awb", ".usm")):
+                        valid_paths.append(p)
+                    else:
+                        try:
+                            with open(full_p, "rb") as f:
+                                if f.read(8).startswith(b"UnityFS"):
+                                    valid_paths.append(p)
+                        except Exception:
+                            pass
+                all_paths = valid_paths
+                
+            total = len(all_paths)
+            self.progress_bar["maximum"] = total
+            self.progress_bar["value"] = 0
 
-            if use_hash:
-                # input files are hashes
-                if has_encrypt:
-                    c.execute("SELECT e FROM a WHERE h=?", (rel_path,))
+            decoded_count = 0
+            missing_meta = 0
+
+            for i, rel_path in enumerate(all_paths, start=1):
+                input_path = os.path.join(src_root, rel_path)
+                self.progress_label.config(
+                    text=f"Loading Asset {i} / {total}" if direct_to_dat else f"Encrypting Asset {i} / {total}"
+                )
+                self.progress_bar["value"] = i
+                self.root.update_idletasks()
+
+                if use_hash:
+                    # input files are hashes
+                    if has_encrypt:
+                        c.execute("SELECT e FROM a WHERE h=?", (rel_path,))
+                        row = c.fetchone()
+                        if not row:
+                            missing_meta += 1
+                            continue
+                        enc_key = int(row[0])
+                    else:
+                        c.execute("SELECT 1 FROM a WHERE h=?", (rel_path,))
+                        row = c.fetchone()
+                        if not row:
+                            missing_meta += 1
+                            continue
+                        enc_key = 0
+
+                    hash_name = rel_path
+                else:
+                    # input files are meta paths
+                    if has_encrypt:
+                        c.execute("SELECT h, e FROM a WHERE n=?", (rel_path,))
+                    else:
+                        c.execute("SELECT h FROM a WHERE n=?", (rel_path,))
                     row = c.fetchone()
+                    # fallback unity & paired acb/awb
+                    if not row:
+                        if input_path.lower().endswith((".acb", ".awb")):
+                            parent_dir = os.path.dirname(input_path)
+                            fname = os.path.basename(input_path)
+                            stem, _ = os.path.splitext(fname)
+                            acb_pair = os.path.join(parent_dir, f"{stem}.acb")
+                            awb_pair = os.path.join(parent_dir, f"{stem}.awb")
+                            if os.path.isfile(acb_pair) and os.path.isfile(awb_pair):
+                                if has_encrypt:
+                                    c.execute("SELECT h, e FROM a WHERE n LIKE ?", (f"%/{fname}",))
+                                else:
+                                    c.execute("SELECT h FROM a WHERE n LIKE ?", (f"%/{fname}",))
+                                row = c.fetchone()
+                        else:
+                            try:
+                                with open(input_path, "rb") as f:
+                                    header = f.read(8)
+                                    if header.startswith(b"UnityFS"):
+                                        f.seek(0)
+                                        env = UnityPy.load(f)
+
+                                        for obj in env.objects:
+                                            if obj.type.name == "AssetBundle":
+                                                data = obj.read()
+                                                if data.m_Name:
+                                                    resolved_name = os.path.splitext(data.m_Name)[0]
+                                                    # retry lookup
+                                                    if has_encrypt:
+                                                        c.execute("SELECT h, e FROM a WHERE n=?", (resolved_name,))
+                                                    else:
+                                                        c.execute("SELECT h FROM a WHERE n=?", (resolved_name,))
+                                                    row = c.fetchone()
+                                                    if row:
+                                                        break
+                            except Exception:
+                                pass
+                    # FINAL CHECK
                     if not row:
                         missing_meta += 1
                         continue
-                    enc_key = int(row[0])
+
+                    if has_encrypt:
+                        hash_name, enc_key = row[0], int(row[1])
+                    else:
+                        hash_name = row[0]
+                        enc_key = 0
+
+                if direct_to_dat:
+                    output_path = os.path.join(dst_root, hash_name[:2], hash_name)
+                    backup = os.path.join(self.backup_path, hash_name[:2], hash_name)
+                    if os.path.isfile(output_path):
+                        if not os.path.isfile(backup):
+                            os.makedirs(os.path.dirname(backup), exist_ok=True)
+                            shutil.move(output_path, backup)  # backup only once
+                        else:
+                            os.remove(output_path)
                 else:
-                    c.execute("SELECT 1 FROM a WHERE h=?", (rel_path,))
-                    row = c.fetchone()
-                    if not row:
-                        missing_meta += 1
-                        continue
-                    enc_key = 0
+                    output_path = os.path.join(dst_root, hash_name)
 
-                hash_name = rel_path
-            else:
-                # input files are meta paths
-                if has_encrypt:
-                    c.execute("SELECT h, e FROM a WHERE n=?", (rel_path,))
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                # for audio / usm
+                if enc_key == 0:
+                    shutil.copy(input_path, output_path)
                 else:
-                    c.execute("SELECT h FROM a WHERE n=?", (rel_path,))
-                row = c.fetchone()
-                # fallback unity
-                if not row:
-                    #print(f"{rel_path} not found, looking up")
-                    try:
-                        with open(input_path, "rb") as f:
-                            header = f.read(8)
-                            if header.startswith(b"UnityFS"):
-                                f.seek(0)
-                                env = UnityPy.load(f)
+                    with open(input_path, "rb") as f:
+                        data = bytearray(f.read())
 
-                                for obj in env.objects:
-                                    if obj.type.name == "AssetBundle":
-                                        data = obj.read()
-                                        if data.m_Name:
-                                            resolved_name = os.path.splitext(data.m_Name)[0]
-                                            # retry lookup
-                                            if has_encrypt:
-                                                c.execute("SELECT h, e FROM a WHERE n=?", (resolved_name,))
-                                            else:
-                                                c.execute("SELECT h FROM a WHERE n=?", (resolved_name,))
-                                            row = c.fetchone()
-                                            if row:
-                                                #print(f"{row} is found!, breaking")
-                                                break
-                    except Exception:
-                        pass
-                # FINAL CHECK
-                if not row:
-                    should_count = False
+                    if len(data) > 256:
+                        key = derive_asset_key(enc_key)
+                        if key:
+                            klen = len(key)
+                            dlen = len(data)
+                            rem = dlen - 256
+                            keystream = (key * ((dlen // klen) + 1))[256:dlen]
+                            data_int = int.from_bytes(data[256:], "big")
+                            key_int = int.from_bytes(keystream, "big")
+                            data[256:] = (data_int ^ key_int).to_bytes(rem, "big")
 
-                    try:
-                        with open(input_path, "rb") as f:
-                            header = f.read(8)
-
-                        if (
-                            header.startswith(b"UnityFS")
-                            or input_path.lower().endswith((".acb", ".awb", ".usm"))
-                        ):
-                            should_count = True
-
-                    except Exception:
-                        pass
-
-                    if should_count:
-                        missing_meta += 1
-
-                    continue
-
-                if has_encrypt:
-                    hash_name, enc_key = row[0], int(row[1])
-                else:
-                    hash_name = row[0]
-                    enc_key = 0
-
-            output_path = os.path.join(dst_root, hash_name)
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            # for audio / usm
-            if enc_key == 0:
-                shutil.copy(input_path, output_path)
-            else:
-                with open(input_path, "rb") as f:
-                    data = bytearray(f.read())
-
-                if len(data) > 256:
-                    key = derive_asset_key(enc_key)
-                    if key:
-                        klen = len(key)
-                        for i in range(256, len(data)):
-                            data[i] ^= key[i % klen]
-
-                with open(output_path, "wb") as f:
-                    f.write(data)
-            decoded_count += 1
-
-        conn.close()
+                    with open(output_path, "wb") as f:
+                        f.write(data)
+                decoded_count += 1
+        finally:
+            conn.close()
         return decoded_count, missing_meta   
 
     def swap_character_attributes(self, src_cid, dst_cid):
@@ -899,6 +1369,14 @@ class ModLoaderGUI:
             "master",
             "master.mdb"
         )
+
+        if is_file_in_use(master_db):
+            messagebox.showwarning(
+                "Game File In Use",
+                "'master.mdb' is currently in use by the game.\n\n"
+                "Please return to the Title screen or close the game, then try again."
+            )
+            return
 
         conn = sqlite3.connect(master_db)
         c = conn.cursor()
@@ -1806,12 +2284,6 @@ class ModLoaderGUI:
         sub_dst = f"{int(sub_dst):02d}"
         sub_head_src = f"{int(sub_head_src):02d}"
         sub_head_dst = f"{int(sub_head_dst):02d}"
-        # print(f"{chara_src}")
-        # print(f"{chara_dst}")
-        # print(f"{sub_src}")
-        # print(f"{sub_dst}")
-        # print(f"{sub_head_src}")
-        # print(f"{sub_head_dst}")
         master.close()
 
         meta = sqlite3.connect(self.meta_path)
@@ -1975,7 +2447,6 @@ class ModLoaderGUI:
 
             if os.path.isfile(src_path):
                 shutil.copy2(src_path, dst_path)
-                #print(f"{src_path}")
                 copied += 1
             else:
                 print("missing dat:", src_path)
@@ -2070,146 +2541,163 @@ class ModLoaderGUI:
             f"{missing_meta} missing in meta."
         )
 
-    def force_translate_english(self):
-        # paths
-        en_base = os.path.join(
-            "C:\\Users", os.getlogin(),
-            "AppData", "LocalLow", "Cygames", "umamusume"
+    def swap_alt_to_main(self):
+        
+        alt_conf = messagebox.askyesno(
+            "Confirm",
+            "if you know then you know."
+            )
+
+        if not alt_conf:
+            return
+            
+        conn = sqlite3.connect(
+            os.path.join(os.path.dirname(self.dat_path), "master", "master.mdb")
         )
-        jp_base = os.path.dirname(self.dat_path)
 
-        en_db = os.path.join(en_base, "master", "master.mdb")
-        jp_db = os.path.join(jp_base, "master", "master.mdb")
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS dress_data_bak AS
+            SELECT * FROM dress_data
+        """)
+        
+        # Get all eligible character IDs
+        c.execute("""
+            SELECT DISTINCT chara_id
+            FROM dress_data
+            WHERE chara_id > 1000
+              AND instr(CAST(condition_type AS TEXT), '6') = 0
+        """)
 
-        if not (os.path.isfile(en_db) and os.path.isfile(jp_db)):
-            messagebox.showerror(
-                "Unavailable",
-                "Both Global and Japan master databases are required."
-            )
+        chara_ids = [row[0] for row in c.fetchall()]
+
+        copy_columns = (
+            "body_type",
+            "body_type_sub",
+            "head_sub_id",
+            "tail_model_id",
+            "tail_model_sub_id",
+        )
+
+        for chara_id in chara_ids:
+            # First dress (smallest ID)
+            c.execute(f"""
+                SELECT id, {', '.join(copy_columns)}
+                FROM dress_data
+                WHERE chara_id=?
+                  AND instr(CAST(condition_type AS TEXT), '6') = 0
+                ORDER BY id
+                LIMIT 1
+            """, (chara_id,))
+
+            row = c.fetchone()
+            if not row:
+                continue
+
+            source_id = row[0]
+            values = row[1:]
+
+            # Copy values to all other dresses
+            c.execute(f"""
+                UPDATE dress_data
+                SET
+                    body_type=?,
+                    body_type_sub=?,
+                    head_sub_id=?,
+                    tail_model_id=?,
+                    tail_model_sub_id=?
+                WHERE chara_id=?
+                  AND id<>?
+                  AND instr(CAST(condition_type AS TEXT), '6') = 0
+            """, (*values, chara_id, source_id))
+
+        conn.commit()
+        conn.close()
+        messagebox.showinfo("Done", "you know it")
+        
+    def restore_alt(self):
+        db_path = os.path.join(
+            os.path.dirname(self.dat_path),
+            "master",
+            "master.mdb"
+        )
+
+        if not os.path.isfile(db_path):
+            messagebox.showerror("Error", "master.mdb not found.")
             return
 
-        if not messagebox.askyesno(
-            "Force Translate English",
-            "Multiple Umamusume installations detected.\n\n"
-            "Do you want to load English text from Global\n"
-            "and overwrite Japanese text?\n\n"
-            "This affects ALL text entries."
-        ):
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+
+        # Backup table exists?
+        c.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+              AND name='dress_data_bak'
+        """)
+
+        if not c.fetchone():
+            conn.close()
+            messagebox.showinfo("Restore", "No backup found.")
             return
 
-        try:
-            # backup JP db
-            shutil.copy(jp_db, jp_db + ".bak")
+        restore_conf = messagebox.askyesno(
+            "Confirm",
+            "Restore original dress parameters?"
+        )
 
-            conn_en = sqlite3.connect(en_db)
-            conn_jp = sqlite3.connect(jp_db)
+        if not restore_conf:
+            conn.close()
+            return
 
-            c_en = conn_en.cursor()
-            c_jp = conn_jp.cursor()
+        c.execute("""
+            SELECT
+                id,
+                body_type,
+                body_type_sub,
+                head_sub_id,
+                tail_model_id,
+                tail_model_sub_id
+            FROM dress_data_bak
+            WHERE chara_id > 1000
+              AND instr(CAST(condition_type AS TEXT), '6') = 0
+        """)
 
-            # load EN text
-            c_en.execute("SELECT category, `index`, text FROM text_data")
-            en_map = {
-                (cat, idx): text
-                for cat, idx, text in c_en.fetchall()
-            }
+        rows = c.fetchall()
 
-            # update JP text
-            c_jp.execute("SELECT category, `index` FROM text_data")
-            for cat, idx in c_jp.fetchall():
-                key = (cat, idx)
-                if key in en_map:
-                    c_jp.execute(
-                        "UPDATE text_data SET text=? WHERE category=? AND `index`=?",
-                        (en_map[key], cat, idx)
-                    )
-            # --- character_system_text ---
-            c_en.execute("""
-                SELECT character_id, voice_id, cue_sheet, lip_sync_data, text
-                FROM character_system_text
-            """)
+        for row in rows:
+            (
+                dress_id,
+                body_type,
+                body_type_sub,
+                head_sub_id,
+                tail_model_id,
+                tail_model_sub_id,
+            ) = row
 
-            char_sys_map = {
-                (cid, vid, cue, lip): text
-                for cid, vid, cue, lip, text in c_en.fetchall()
-            }
+            c.execute("""
+                UPDATE dress_data
+                SET
+                    body_type=?,
+                    body_type_sub=?,
+                    head_sub_id=?,
+                    tail_model_id=?,
+                    tail_model_sub_id=?
+                WHERE id=?
+            """, (
+                body_type,
+                body_type_sub,
+                head_sub_id,
+                tail_model_id,
+                tail_model_sub_id,
+                dress_id,
+            ))
 
-            c_jp.execute("""
-                SELECT character_id, voice_id, cue_sheet, lip_sync_data
-                FROM character_system_text
-            """)
+        conn.commit()
+        conn.close()
 
-            for cid, vid, cue, lip in c_jp.fetchall():
-                key = (cid, vid, cue, lip)
-                if key in char_sys_map:
-                    c_jp.execute("""
-                        UPDATE character_system_text
-                        SET text=?
-                        WHERE character_id=? AND voice_id=? AND cue_sheet=? AND lip_sync_data=?
-                    """, (char_sys_map[key], cid, vid, cue, lip))
-                    
-            # --- race_jikkyo_comment ---
-            c_en.execute("""
-                SELECT group_id, voice, message
-                FROM race_jikkyo_comment
-            """)
-
-            jikkyo_comment_map = {
-                (gid, voice): msg
-                for gid, voice, msg in c_en.fetchall()
-            }
-
-            c_jp.execute("""
-                SELECT group_id, voice
-                FROM race_jikkyo_comment
-            """)
-
-            for gid, voice in c_jp.fetchall():
-                key = (gid, voice)
-                if key in jikkyo_comment_map:
-                    c_jp.execute("""
-                        UPDATE race_jikkyo_comment
-                        SET message=?
-                        WHERE group_id=? AND voice=?
-                    """, (jikkyo_comment_map[key], gid, voice))
-                    
-            # --- race_jikkyo_message ---
-            c_en.execute("""
-                SELECT group_id, voice, message
-                FROM race_jikkyo_message
-            """)
-
-            jikkyo_message_map = {
-                (gid, voice): msg
-                for gid, voice, msg in c_en.fetchall()
-            }
-
-            c_jp.execute("""
-                SELECT group_id, voice
-                FROM race_jikkyo_message
-            """)
-
-            for gid, voice in c_jp.fetchall():
-                key = (gid, voice)
-                if key in jikkyo_message_map:
-                    c_jp.execute("""
-                        UPDATE race_jikkyo_message
-                        SET message=?
-                        WHERE group_id=? AND voice=?
-                    """, (jikkyo_message_map[key], gid, voice))
-
-            conn_jp.commit()
-            conn_en.close()
-            conn_jp.close()
-
-            messagebox.showinfo(
-                "Done",
-                "Japanese text has been replaced with English.\n"
-                "A backup was created: master.mdb.bak"
-            )
-
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
+        messagebox.showinfo("Done", "Original dress parameters restored.")
 
     def scan_full_path(self, base_path):
         result = []
@@ -2219,6 +2707,115 @@ class ModLoaderGUI:
                 rel_path = os.path.relpath(full_path, base_path)
                 result.append(rel_path.replace("\\", "/"))
         return result
+
+    def edit_parameter_personality(self, chara_id):
+        db_path = os.path.join(os.path.dirname(self.dat_path), "master", "master.mdb")
+
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Edit Personality Parameter - {chara_id}")
+        win.geometry("700x600")
+
+        # ---------------- Scroll ----------------
+        canvas = tk.Canvas(win)
+        scrollbar = tk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        frame = tk.Frame(canvas)
+
+        frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        row_widgets = []
+
+        # ---------------- Load current personality ----------------
+        c.execute("""
+            SELECT target_scene, target_cut, target_type, value
+            FROM chara_type
+            WHERE chara_id=?
+            ORDER BY target_scene, target_cut, target_type
+        """, (chara_id,))
+
+        rows = c.fetchall()
+
+        for scene, cut, typ, current_value in rows:
+
+            r = tk.Frame(frame)
+            r.pack(fill="x", pady=2)
+
+            tk.Label(
+                r,
+                text=f"Scene {scene} | Cut {cut} | Type {typ}",
+                width=35,
+                anchor="w"
+            ).pack(side="left")
+
+            # available values
+            c.execute("""
+                SELECT DISTINCT value
+                FROM chara_type_bak
+                WHERE target_scene=?
+                  AND target_cut=?
+                  AND target_type=?
+                ORDER BY value
+            """, (scene, cut, typ))
+
+            values = [str(v[0]) for v in c.fetchall()]
+
+            # safety
+            if str(current_value) not in values:
+                values.append(str(current_value))
+                values.sort(key=int)
+
+            value_var = tk.StringVar(value=str(current_value))
+
+            ttk.Combobox(
+                r,
+                textvariable=value_var,
+                values=values,
+                state="readonly",
+                width=10
+            ).pack(side="left", padx=5)
+
+            row_widgets.append((scene, cut, typ, value_var))
+
+        # ---------------- Save ----------------
+        def save_parameter():
+
+            for scene, cut, typ, value_var in row_widgets:
+
+                c.execute("""
+                    UPDATE chara_type
+                    SET value=?
+                    WHERE chara_id=?
+                      AND target_scene=?
+                      AND target_cut=?
+                      AND target_type=?
+                """, (
+                    int(value_var.get()),
+                    chara_id,
+                    scene,
+                    cut,
+                    typ
+                ))
+
+            conn.commit()
+            messagebox.showinfo("Done", "Parameters updated.")
+
+        tk.Button(win, text="Save", command=save_parameter).pack(pady=10)
+
+        win.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: (conn.close(), win.destroy())
+        )
 
     def open_personality_settings(self):
         messagebox.showwarning("Tazuna saying", 
@@ -2294,6 +2891,11 @@ class ModLoaderGUI:
             var = tk.StringVar(value="None")
             ttk.Combobox(row, textvariable=var, values=options, state="readonly", width=30).pack(side="left")
             swap_vars[cid] = var
+            tk.Button(
+                row,
+                text="Edit Parameter",
+                command=lambda cid=cid: self.edit_parameter_personality(cid)
+            ).pack(side="left", padx=5)
         # 1212    
         control_row = tk.Frame(win)
         control_row.pack(pady=5)
@@ -3193,7 +3795,12 @@ class ModLoaderGUI:
 
         # --- no config found ---
         else:
-            messagebox.showerror("Error", "No setting.json or setting.yml found.")
+            messagebox.showerror(
+                "Mod Settings Not Found",
+                "No setting.json or setting.yml found.\n\n"
+                "Are you trying to load an Asset Mod?\n"
+                "Use Import Asset Folder instead."
+            )
             self.reset_mod_info()
             return
 
@@ -3215,7 +3822,6 @@ class ModLoaderGUI:
         assets_exist = os.path.isdir(os.path.join(mod_folder, "assets"))
 
         self.assets_load_btn.config(state="normal" if assets_exist else "disabled")
-        #self.assets_unload_btn.config(state="normal" if assets_exist else "disabled")
 
     def platform_check_manual(self, base_path):
         rel_paths = self.scan_full_path(base_path)
@@ -3252,7 +3858,10 @@ class ModLoaderGUI:
             choice = messagebox.askyesnocancel(
                 "Encryption Check",
                 f"{region_warn}{folder_type} detected.\n\n"
-                "Are you loading unencrypted / legacy assets?"
+                "How was this mod created?\n\n"
+                "Yes → Regular mod (encrypt before loading)\n"
+                "No → Already-encrypted asset mod (load directly)\n\n"
+                "If you're not sure, choose ""Yes"". Most mods use this format."
             )
 
             if choice is None:
@@ -3268,9 +3877,11 @@ class ModLoaderGUI:
         # ---------------- NOT PLATFORM MOD ----------------
 
         choice = messagebox.askyesnocancel(
-            "Non-platform Mod",
-            "No platform folders detected.\n\n"
-            "Are you loading unencrypted / legacy assets?"
+            "No Platform Detected",
+            "How was this mod created?\n\n"
+            "Yes → Regular mod (encrypt before loading)\n"
+            "No → Already-encrypted asset mod (load directly)\n\n"
+            "If you're not sure, choose ""Yes"". Most mods use this format."
         )
 
         if choice is None:
@@ -3313,7 +3924,13 @@ class ModLoaderGUI:
                         filtered.append(p)
                 rel_paths = filtered
                 
-            assets = [os.path.join(path, p) for p in rel_paths]
+            assets = [
+                os.path.join(path, p)
+                for p in rel_paths
+                if "." not in os.path.basename(p)
+                and len(os.path.basename(p)) == 32
+                and os.path.basename(p).isalnum()
+            ]
 
             if not assets:
                 messagebox.showinfo("uhh", "there nothing inside.")
@@ -3329,10 +3946,6 @@ class ModLoaderGUI:
 
             for i, src in enumerate(assets, start=1):
                 filename = os.path.basename(src)
-
-                # optional filter
-                if len(filename) < 32:
-                    continue
 
                 dst = os.path.join(self.dat_path, filename[:2], filename)
                 backup = os.path.join(self.backup_path, filename[:2], filename)
@@ -3368,9 +3981,56 @@ class ModLoaderGUI:
             return
         # ---------------- LOAD ---------------- if is_mod_encrypted is false
         elif mode == "decrypt":
-            asset_folder = os.path.join(path, ".assets_cache")
             try:
-                decoded_count, missing_meta = self.decrypt_assets_internal(path, asset_folder, use_hash=False, filter_path=filter_folder)
+                try:
+                    decoded_count, missing_meta = self.decrypt_assets_internal(
+                        path,
+                        self.dat_path,
+                        use_hash=False,
+                        filter_path=filter_folder,
+                        direct_to_dat=True
+                    )
+                except Exception as e:
+                    messagebox.showerror(
+                        "Decrypt Error",
+                        "Failed to decrypt assets.\n"
+                        "This mod may be incompatible with the current game version or region.\n\n"
+                        f"{e}"
+                    )
+                    return
+
+                if decoded_count == 0 and missing_meta == 0:
+                    messagebox.showinfo("uhh", "there nothing inside.")
+                    return
+
+                messagebox.showinfo(
+                    "Success",
+                    f"{decoded_count} assets loaded successfully.\n"
+                    f"{missing_meta} assets were not found in meta database."
+                )
+            finally:
+                self.progress_label.config(text="Waiting")
+            return
+
+    def load_assets(self):
+        folder = self.mod_path.get()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showerror("Error", "Please select a valid mod folder first.")
+            return
+
+        asset_folder_v = os.path.join(folder, "assets")
+        if not os.path.isdir(asset_folder_v):
+            messagebox.showinfo("uhh", "there nothing inside.")
+            return
+        try:
+            try:
+                decoded_count, missing_meta = self.decrypt_assets_internal(
+                    asset_folder_v,
+                    self.dat_path,
+                    use_hash=False,
+                    filter_path=None,
+                    direct_to_dat=True
+                )
             except Exception as e:
                 messagebox.showerror(
                     "Decrypt Error",
@@ -3380,135 +4040,17 @@ class ModLoaderGUI:
                 )
                 return
 
-            if not os.listdir(asset_folder):
+            if decoded_count == 0 and missing_meta == 0:
                 messagebox.showinfo("uhh", "there nothing inside.")
-                shutil.rmtree(asset_folder, ignore_errors=True)
-                return
-                
-            # --- Step 2: load assets from decrypted cache ---
-            if not os.path.isdir(asset_folder):
-                messagebox.showerror("Error", f"Asset cache not found: {asset_folder}")
                 return
 
-            os.makedirs(self.backup_path, exist_ok=True)
-            assets = os.listdir(asset_folder)
-
-            self.progress_bar["maximum"] = len(assets)
-            self.progress_bar["value"] = 0
-
-            for i, asset in enumerate(assets, start=1):
-                src = os.path.join(asset_folder, asset)
-                dst = os.path.join(self.dat_path, asset[:2], asset)
-                backup = os.path.join(self.backup_path, asset[:2], asset)
-
-                if os.path.isfile(dst):
-                    if not os.path.isfile(backup):
-                        os.makedirs(os.path.dirname(backup), exist_ok=True)
-                        shutil.move(dst, backup)  # backup only once
-                    else:
-                        os.remove(dst)
-                else:
-                    missing_meta += 1
-
-                shutil.copy(src, dst)
-                self.progress_label.config(text=f"Loading Asset {i} / {len(assets)}")
-                self.progress_bar["value"] = i
-                self.root.update_idletasks()
-
-            # --- Step 3: cleanup ---
-            if os.path.exists(asset_folder):
-                shutil.rmtree(asset_folder, ignore_errors=True)
-            self.progress_label.config(text="Waiting")
             messagebox.showinfo(
                 "Success",
                 f"{decoded_count} assets loaded successfully.\n"
                 f"{missing_meta} assets were not found in meta database."
             )
-            return
-
-    def load_assets(self):
-        folder = self.mod_path.get()
-        if not folder or not os.path.isdir(folder):
-            messagebox.showerror("Error", "Please select a valid mod folder first.")
-            return
-        asset_folder_v = os.path.join(folder, "assets")
-        asset_folder = os.path.join(folder, "assets_cache")
-        try:
-            decoded_count, missing_meta = self.decrypt_assets_internal(asset_folder_v, asset_folder, use_hash=False, filter_path=None)
-        except Exception as e:
-            messagebox.showerror(
-                "Decrypt Error",
-                "Failed to decrypt assets.\n"
-                "This mod may be incompatible with the current game version or region.\n\n"
-                f"{e}"
-            )
-            return
-
-        if not os.listdir(asset_folder):
-            messagebox.showinfo("uhh", "there nothing inside.")
-            shutil.rmtree(asset_folder, ignore_errors=True)
-            return
-            
-        # --- Step 2: load assets from decrypted cache ---
-        if not os.path.isdir(asset_folder):
-            messagebox.showerror("Error", f"Asset cache not found: {asset_folder}")
-            return
-
-        os.makedirs(self.backup_path, exist_ok=True)
-        assets = os.listdir(asset_folder)
-
-        self.progress_bar["maximum"] = len(assets)
-        self.progress_bar["value"] = 0
-
-        for i, asset in enumerate(assets, start=1):
-            src = os.path.join(asset_folder, asset)
-            dst = os.path.join(self.dat_path, asset[:2], asset)
-            backup = os.path.join(self.backup_path, asset[:2], asset)
-
-            if os.path.isfile(dst):
-                if not os.path.isfile(backup):
-                    os.makedirs(os.path.dirname(backup), exist_ok=True)
-                    shutil.move(dst, backup)  # backup only once
-                else:
-                    os.remove(dst)
-            else:
-                missing_meta += 1
-            shutil.copy(src, dst)
-            self.progress_label.config(text=f"Loading Asset {i} / {len(assets)}")
-            self.progress_bar["value"] = i
-            self.root.update_idletasks()
-
-        # --- Step 3: cleanup ---
-        if os.path.exists(asset_folder):
-            shutil.rmtree(asset_folder, ignore_errors=True)
-        self.progress_label.config(text="Waiting")
-        messagebox.showinfo(
-            "Success",
-            f"{decoded_count} assets loaded successfully.\n"
-            f"{missing_meta} assets were not found in meta database."
-        )
-
-    def unload_assets(self):
-        folder = self.mod_path.get()
-        asset_folder = os.path.join(folder, "assets")
-
-        self.progress_bar["maximum"] = len(assets)
-        self.progress_bar["value"] = 0
-
-        for i, asset in enumerate(assets, start=1):
-            dst = os.path.join(self.dat_path, asset[:2], asset)
-            backup = os.path.join(self.backup_path, asset[:2], asset)
-
-            if os.path.isfile(backup):
-                if os.path.exists(dst):
-                    os.remove(dst)
-                shutil.move(backup, dst)
-
-            self.progress_label.config(text=f"Unloading Asset {i} / {len(assets)}")
-            self.progress_bar["value"] = i
-            self.root.update_idletasks()
-        messagebox.showinfo("Success", "Assets unloaded successfully.")
-        self.progress_label.config(text="Waiting")
+        finally:
+            self.progress_label.config(text="Waiting")
 
     def restore_original_assets(self):
         # collect backup files
@@ -3528,11 +4070,14 @@ class ModLoaderGUI:
         if os.path.isfile(meta_path):
             try:
                 hashes = [os.path.basename(f) for f in backup_files]
-                name_map = {}
-
                 if hashes:
                     try:
                         conn = sqlite3.connect(meta_path)
+                        try:
+                            conn.execute("CREATE INDEX IF NOT EXISTS idx_a_h ON a(h)")
+                            conn.commit()
+                        except Exception:
+                            pass
                         c = conn.cursor()
 
                         # SQLite has limit (~999), so chunk it
@@ -3550,7 +4095,6 @@ class ModLoaderGUI:
 
                     except Exception as e:
                         messagebox.showwarning("Meta DB", f"Failed batch lookup:\n{e}")
-                conn.close()
             except Exception as e:
                 messagebox.showwarning("Meta DB", f"Failed to read meta database:\n{e}")
 
@@ -3568,17 +4112,39 @@ class ModLoaderGUI:
         listbox = tk.Listbox(frame, selectmode="extended", yscrollcommand=scrollbar.set, width=100, height=20)
         entries = []
 
-        for f in backup_files:
-            h = os.path.basename(f)
-            if h in name_map:
-                display = name_map[h]
-            else:
-                display = f"[Unknown] {h}"
-            entries.append((f, display))
-        entries.sort(key=lambda x: x[1].lower())  # sort by friendly name
-        listbox.insert(tk.END, *[display_name for _, display_name in entries])
+        def refresh_entries():
+            nonlocal entries
+            entries = []
+            current_backups = []
+            for root_dir, dirs, files in os.walk(self.backup_path):
+                for file in files:
+                    rel_path = os.path.relpath(os.path.join(root_dir, file), self.backup_path)
+                    current_backups.append(rel_path)
+
+            for f in current_backups:
+                h = os.path.basename(f)
+                if h in name_map:
+                    display = name_map[h]
+                else:
+                    display = f"[Unknown] {h}"
+                entries.append((f, display))
+            entries.sort(key=lambda x: x[1].lower())  # sort by friendly name
+
+            listbox.delete(0, tk.END)
+            if entries:
+                listbox.insert(tk.END, *[display_name for _, display_name in entries])
+
+        refresh_entries()
         listbox.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=listbox.yview)
+
+        def cleanup_empty_backup_dirs(file_path):
+            parent = os.path.dirname(file_path)
+            if os.path.isdir(parent) and not os.listdir(parent):
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    pass
 
         def restore_selected():
             sel = listbox.curselection()
@@ -3599,9 +4165,12 @@ class ModLoaderGUI:
                 if os.path.exists(dat_file):
                     os.remove(dat_file)
                     shutil.move(backup_file, dat_file)
+                    cleanup_empty_backup_dirs(backup_file)
                     restored += 1
                 else:
                     cannot_restored += 1
+
+            refresh_entries()
             messagebox.showinfo(
                 "Done",
                 f"Restored {restored} selected file(s).\n"
@@ -3614,16 +4183,19 @@ class ModLoaderGUI:
 
             restored = 0
             cannot_restored = 0
-            for rel_path, _ in entries:
+            for rel_path, _ in list(entries):
                 backup_file = os.path.join(self.backup_path, rel_path)
                 dat_file = os.path.join(self.dat_path, rel_path)
                 os.makedirs(os.path.dirname(dat_file), exist_ok=True)
                 if os.path.exists(dat_file):
                     os.remove(dat_file)
                     shutil.move(backup_file, dat_file)
+                    cleanup_empty_backup_dirs(backup_file)
                     restored += 1
                 else:
                     cannot_restored += 1
+
+            refresh_entries()
             messagebox.showinfo(
                 "Done",
                 f"Restored {restored} file(s).\n"
@@ -3636,27 +4208,6 @@ class ModLoaderGUI:
         tk.Button(btn_frame, text="Restore All", command=restore_all).pack(side="left", padx=5)
 
 
-    def delete_master_db(self):
-        db_path = os.path.join(os.path.dirname(self.dat_path), "master", "master.mdb")
-        if not os.path.isfile(db_path):
-            messagebox.showinfo("Info", "master.mdb not found, nothing to delete.")
-            return
-
-        if not messagebox.askyesno(
-            "Confirm Delete",
-            "This will delete master.mdb.\n\n"
-            "The game will download a fresh copy after login.\n\n"
-            "Are you sure you want to continue?"
-        ):
-            return
-
-        try:
-            os.remove(db_path)
-            messagebox.showinfo("Deleted", "master.mdb deleted successfully.\nRe-login to download a new database.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not delete database:\n{e}")
-
-        return exists
 
 if __name__ == "__main__":
     root = tk.Tk()

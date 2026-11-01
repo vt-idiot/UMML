@@ -61,6 +61,18 @@ LEGACY_TOOLS: tuple[LegacyTool, ...] = (
         "open_swap_character",
     ),
     LegacyTool(
+        "swap_alt",
+        "Swap alt outfits to main",
+        "Promote alternate outfits to the main dress slot (backs up dress_data first).",
+        "swap_alt_to_main",
+    ),
+    LegacyTool(
+        "restore_alt",
+        "Restore alt outfits",
+        "Undo the alt-to-main outfit swap from the dress_data backup.",
+        "restore_alt",
+    ),
+    LegacyTool(
         "translation",
         "Translation merge",
         "Merge Global text into the Japanese client.",

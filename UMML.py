@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-platform UMML entry point.
 
-The upstream 1.5.0-hotfix implementation lives in ``UMML_core.py``.  This thin
+The upstream 2.0.2 implementation (NaufalFajri/UMML) lives in ``UMML_core.py``.  This thin
 entry point keeps that mature mod-loading code intact while supplying portable
 Steam/Proton discovery, a safer startup path, diagnostics, and a responsive ttk
 interface.
@@ -32,7 +32,14 @@ from umml_platform import (
     resolve_case_sensitive_path,
 )
 
-MODLOADER_VERSION = "1.5.0-hotfix"
+MODLOADER_VERSION = "2.0.2"
+
+_REGION_PLATFORM = {
+    "global": "Steam Global",
+    "en": "Steam Global",
+    "japan": "Steam Japan",
+    "jp": "Steam Japan",
+}
 
 
 def run_doctor() -> int:
@@ -137,6 +144,9 @@ class ModLoaderGUI(core.ModLoaderGUI):
             self.game_dir,
             self.meta_path_pth,
         ) = load_settings(parent=self.root, status_callback=self._set_startup_status)
+        # Upstream 2.0 methods read self.platform; the Manager owns installation
+        # selection, so derive a label instead of showing upstream's picker.
+        self.platform = _REGION_PLATFORM.get(str(self.region).casefold(), str(self.region))
 
         self.meta_path_load = core.load_or_decrypt_meta_simple
         self._set_startup_status(
@@ -225,20 +235,30 @@ class ModLoaderGUI(core.ModLoaderGUI):
         experimental_menu = tk.Menu(tools_menu, tearoff=0)
         tools_menu.add_cascade(label="Experimental", menu=experimental_menu)
 
+        dress_tweak_menu = tk.Menu(tools_menu, tearoff=0)
+        tools_menu.add_cascade(label="Dress tweaks", menu=dress_tweak_menu)
+
+        # Upstream 2.0 marks the editors as unsupported/unstable and checks that
+        # master.mdb is not locked by the game before opening them.
+        misc = self.warn_misc_unsupported
         asset_menu.add_command(label="Clean unused assets", command=self.clean_unused_assets)
-        character_menu.add_command(label="Attributes", command=self.open_chara_settings)
-        character_menu.add_command(label="Personality", command=self.open_personality_settings)
-        character_menu.add_command(label="Dress", command=self.open_dress_settings)
-        single_mode_menu.add_command(label="Training", command=self.open_training_settings)
-        story_menu.add_command(label="Concert", command=self.open_story_concert)
-        modelreplace_menu.add_command(label="Swap Character", command=self.open_swap_character)
+        character_menu.add_command(label="Attributes", command=misc(self.open_chara_settings))
+        character_menu.add_command(label="Personality", command=misc(self.open_personality_settings))
+        character_menu.add_command(label="Dress", command=misc(self.open_dress_settings))
+        single_mode_menu.add_command(label="Training", command=misc(self.open_training_settings))
+        story_menu.add_command(label="Concert", command=misc(self.open_story_concert))
+        modelreplace_menu.add_command(label="Swap Character", command=misc(self.open_swap_character))
+        dress_tweak_menu.add_command(label="Swap alt outfits to main", command=misc(self.swap_alt_to_main))
+        dress_tweak_menu.add_command(label="Restore alt outfits", command=misc(self.restore_alt))
         experimental_menu.add_command(
             label="Merge Global translation into Japanese",
-            command=self.force_translate_english,
+            command=misc(self.force_translate_english),
         )
 
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="How do I install a mod?", command=self.how_do_i_install_mod)
+        help_menu.add_separator()
         help_menu.add_command(label="Detected paths", command=self.show_detected_paths)
         help_menu.add_command(label="Run diagnostics", command=self.show_doctor_report)
         help_menu.add_separator()
@@ -270,7 +290,8 @@ class ModLoaderGUI(core.ModLoaderGUI):
         ttk.Entry(mod_frame, textvariable=self.mod_path).grid(row=0, column=0, sticky="ew", padx=(0, 8))
         ttk.Button(mod_frame, text="Browse…", command=self.browse_folder).grid(row=0, column=1, padx=4)
         ttk.Button(mod_frame, text="Reload", command=self.reload).grid(row=0, column=2, padx=4)
-        ttk.Button(mod_frame, text="Preview", command=self.preview_assets).grid(row=0, column=3, padx=(4, 0))
+        ttk.Button(mod_frame, text="Preview", command=self.preview_assets).grid(row=0, column=3, padx=4)
+        ttk.Button(mod_frame, text="Help", command=self.how_do_i_install_mod).grid(row=0, column=4, padx=(4, 0))
 
         info_frame = ttk.LabelFrame(content, text="Mod information", padding=12)
         info_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 6))
@@ -308,22 +329,24 @@ class ModLoaderGUI(core.ModLoaderGUI):
         self.assets_load_raw_btn.grid(row=1, column=0, sticky="ew", pady=7)
         self.restore_btn = ttk.Button(control_frame, text="Restore original assets", command=self.restore_original_assets)
         self.restore_btn.grid(row=2, column=0, sticky="ew", pady=7)
-        ttk.Separator(control_frame).grid(row=3, column=0, sticky="ew", pady=10)
+        self.clean_btn = ttk.Button(control_frame, text="Clean up unused assets", command=self.clean_unused_assets)
+        self.clean_btn.grid(row=3, column=0, sticky="ew", pady=7)
+        ttk.Separator(control_frame).grid(row=4, column=0, sticky="ew", pady=10)
         self.delete_db_btn = ttk.Button(
             control_frame,
             text="Delete master database",
             command=self.delete_master_db,
             style="Danger.TButton",
         )
-        self.delete_db_btn.grid(row=4, column=0, sticky="ew", pady=7)
+        self.delete_db_btn.grid(row=5, column=0, sticky="ew", pady=7)
         ttk.Label(
             control_frame,
             text="Keep the game closed while loading or restoring assets.",
             style="SurfaceMuted.TLabel",
             wraplength=260,
             justify="left",
-        ).grid(row=5, column=0, sticky="sw", pady=(14, 0))
-        control_frame.rowconfigure(5, weight=1)
+        ).grid(row=6, column=0, sticky="sw", pady=(14, 0))
+        control_frame.rowconfigure(6, weight=1)
 
         progress_frame = ttk.LabelFrame(content, text="Progress", padding=12)
         progress_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
@@ -398,6 +421,149 @@ class ModLoaderGUI(core.ModLoaderGUI):
             )
         except Exception as exc:
             messagebox.showerror("Error", f"Could not delete database:\n{exc}", parent=self.root)
+
+
+    # Removed upstream in 2.0 ("add swap alt"); kept for the Studio translation tool.
+    def force_translate_english(self):
+        # paths
+        en_base = os.path.join(
+            "C:\\Users", os.getlogin(),
+            "AppData", "LocalLow", "Cygames", "umamusume"
+        )
+        jp_base = os.path.dirname(self.dat_path)
+
+        en_db = os.path.join(en_base, "master", "master.mdb")
+        jp_db = os.path.join(jp_base, "master", "master.mdb")
+
+        if not (os.path.isfile(en_db) and os.path.isfile(jp_db)):
+            messagebox.showerror(
+                "Unavailable",
+                "Both Global and Japan master databases are required."
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Force Translate English",
+            "Multiple Umamusume installations detected.\n\n"
+            "Do you want to load English text from Global\n"
+            "and overwrite Japanese text?\n\n"
+            "This affects ALL text entries."
+        ):
+            return
+
+        try:
+            # backup JP db
+            shutil.copy(jp_db, jp_db + ".bak")
+
+            conn_en = sqlite3.connect(en_db)
+            conn_jp = sqlite3.connect(jp_db)
+
+            c_en = conn_en.cursor()
+            c_jp = conn_jp.cursor()
+
+            # load EN text
+            c_en.execute("SELECT category, `index`, text FROM text_data")
+            en_map = {
+                (cat, idx): text
+                for cat, idx, text in c_en.fetchall()
+            }
+
+            # update JP text
+            c_jp.execute("SELECT category, `index` FROM text_data")
+            for cat, idx in c_jp.fetchall():
+                key = (cat, idx)
+                if key in en_map:
+                    c_jp.execute(
+                        "UPDATE text_data SET text=? WHERE category=? AND `index`=?",
+                        (en_map[key], cat, idx)
+                    )
+            # --- character_system_text ---
+            c_en.execute("""
+                SELECT character_id, voice_id, cue_sheet, lip_sync_data, text
+                FROM character_system_text
+            """)
+
+            char_sys_map = {
+                (cid, vid, cue, lip): text
+                for cid, vid, cue, lip, text in c_en.fetchall()
+            }
+
+            c_jp.execute("""
+                SELECT character_id, voice_id, cue_sheet, lip_sync_data
+                FROM character_system_text
+            """)
+
+            for cid, vid, cue, lip in c_jp.fetchall():
+                key = (cid, vid, cue, lip)
+                if key in char_sys_map:
+                    c_jp.execute("""
+                        UPDATE character_system_text
+                        SET text=?
+                        WHERE character_id=? AND voice_id=? AND cue_sheet=? AND lip_sync_data=?
+                    """, (char_sys_map[key], cid, vid, cue, lip))
+                    
+            # --- race_jikkyo_comment ---
+            c_en.execute("""
+                SELECT group_id, voice, message
+                FROM race_jikkyo_comment
+            """)
+
+            jikkyo_comment_map = {
+                (gid, voice): msg
+                for gid, voice, msg in c_en.fetchall()
+            }
+
+            c_jp.execute("""
+                SELECT group_id, voice
+                FROM race_jikkyo_comment
+            """)
+
+            for gid, voice in c_jp.fetchall():
+                key = (gid, voice)
+                if key in jikkyo_comment_map:
+                    c_jp.execute("""
+                        UPDATE race_jikkyo_comment
+                        SET message=?
+                        WHERE group_id=? AND voice=?
+                    """, (jikkyo_comment_map[key], gid, voice))
+                    
+            # --- race_jikkyo_message ---
+            c_en.execute("""
+                SELECT group_id, voice, message
+                FROM race_jikkyo_message
+            """)
+
+            jikkyo_message_map = {
+                (gid, voice): msg
+                for gid, voice, msg in c_en.fetchall()
+            }
+
+            c_jp.execute("""
+                SELECT group_id, voice
+                FROM race_jikkyo_message
+            """)
+
+            for gid, voice in c_jp.fetchall():
+                key = (gid, voice)
+                if key in jikkyo_message_map:
+                    c_jp.execute("""
+                        UPDATE race_jikkyo_message
+                        SET message=?
+                        WHERE group_id=? AND voice=?
+                    """, (jikkyo_message_map[key], gid, voice))
+
+            conn_jp.commit()
+            conn_en.close()
+            conn_jp.close()
+
+            messagebox.showinfo(
+                "Done",
+                "Japanese text has been replaced with English.\n"
+                "A backup was created: master.mdb.bak"
+            )
+
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
 
 def _show_fatal_gui_error(root, title, exc):
