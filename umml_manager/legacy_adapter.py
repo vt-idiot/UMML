@@ -22,7 +22,7 @@ from .asset_codec import (
 )
 from .characters import character_of
 from .locking import FileLock, LockError
-from .models import PACKAGE_UMML_ASSETS, ModRecord
+from .models import ASSET_INDEX_VERSION, PACKAGE_UMML_ASSETS, ModRecord
 from .options import OptionError, select_source_paths
 from .safety import SafetyError, hash_file, validate_regular_tree
 from .store import ManagerStore, StoreError
@@ -191,6 +191,7 @@ class LegacyAssetAdapter:
                 dormant_sources=index.dormant_sources,
                 target_characters=index.target_characters,
                 dormant_characters=index.dormant_characters,
+                asset_index_version=ASSET_INDEX_VERSION,
                 source_indexed_against=fingerprint,
                 prepared_against=fingerprint,
                 prepared_at=datetime.now(timezone.utc).isoformat(),

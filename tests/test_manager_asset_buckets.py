@@ -130,6 +130,25 @@ class AssetBucketTests(unittest.TestCase):
         self.assertEqual(again.pending_targets, {})
         self.assertFalse(probe._pending_targets_arrived(again))
 
+    def test_records_from_an_older_manager_are_reprepared(self):
+        from dataclasses import replace
+
+        from umml_manager.models import ASSET_INDEX_VERSION
+
+        prepared = self._prepare()
+        self.assertEqual(prepared.asset_index_version, ASSET_INDEX_VERSION)
+
+        class _Needs(AutoPrepareActions):
+            def __init__(self, dat):
+                self.dat_path = _Var(str(dat))
+                self.meta_path = _Var(__file__)
+                self.metadata_fingerprint = _Var("")
+
+        probe = _Needs(self.dat)
+        self.assertFalse(probe._record_needs_auto_prepare(prepared))
+        old = replace(prepared, asset_index_version=0, target_characters={})
+        self.assertTrue(probe._record_needs_auto_prepare(old))
+
     def test_buckets_survive_registry_round_trip(self):
         prepared = self._prepare()
         reloaded = ManagerStore(self.root / "manager").get_mod(prepared.id)

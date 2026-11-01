@@ -46,6 +46,10 @@ class SourceSpec:
         )
 
 
+# Bumped when prepare starts recording something new (buckets, characters).
+# Records prepared by an older Manager are re-prepared in the background.
+ASSET_INDEX_VERSION = 1
+
 ORIGIN_FOLDER = "folder"
 ORIGIN_ARCHIVE = "archive"
 
@@ -147,6 +151,7 @@ class ModRecord:
     # ownership between mods and the per-character picker.
     target_characters: dict[str, str] = field(default_factory=dict)
     dormant_characters: dict[str, str] = field(default_factory=dict)
+    asset_index_version: int = 0
     # Set when the source is referenced in place (for example on an external
     # drive) instead of being copied into the library's sources folder.
     origin: SourceOrigin | None = None
@@ -221,6 +226,7 @@ class ModRecord:
                 str(key): str(value)
                 for key, value in _mapping(data.get("dormant_characters", {})).items()
             },
+            asset_index_version=int(data.get("asset_index_version") or 0),
             origin=SourceOrigin.from_dict(data.get("origin")),
         )
 
