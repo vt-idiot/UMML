@@ -4,7 +4,7 @@ import hashlib
 import json
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -16,11 +16,12 @@ from .safety import (
     SafetyError,
     atomic_copy_file,
     atomic_write_json,
-    hash_file,
     normalize_relative_path,
     path_under,
     validate_sha256,
 )
+from .linking import CACHE_FILE as HASH_CACHE_FILE
+from .linking import HashCache, link_or_copy, same_file
 from .store import ManagerStore
 
 ACTIVE_VERSION = 2
@@ -68,6 +69,10 @@ class ApplyResult:
     unchanged: int
     recovered_transactions: int = 0
     imported_baselines: int = 0
+    # Files placed by hardlink rather than copied (snapshots, baselines,
+    # installs and restores all count).
+    linked: int = 0
+    copied: int = 0
 
 
 class ApplyEngine:
@@ -84,6 +89,18 @@ class ApplyEngine:
         self.game_dir = game_dir
         self.process_check = process_check
         self.target_id = _target_id(self.dat_path)
+        self.hashes = HashCache(self.store.paths.root / HASH_CACHE_FILE)
+        self.linked = 0
+        self.copied = 0
+
+    def _sha(self, path: str | Path) -> str:
+        return self.hashes.sha256(path)
+
+    def _link(self, source: Path, target: Path) -> None:
+        if link_or_copy(source, target):
+            self.linked += 1
+        else:
+            self.copied += 1
 
     def apply(
         self,
@@ -123,6 +140,11 @@ class ApplyEngine:
             raise ApplyError(str(exc)) from exc
         except SafetyError as exc:
             raise ApplyError(str(exc)) from exc
+        finally:
+            try:
+                self.hashes.save()
+            except OSError:
+                pass
 
     def _validate_resolution(self, resolution: Resolution) -> None:
         groups = (
@@ -159,7 +181,7 @@ class ApplyEngine:
             if not source.is_file():
                 failures.append(f"{claim.mod_id}: missing {relative}")
                 continue
-            actual = hash_file(source)
+            actual = self._sha(source)
             if actual != claim.sha256:
                 failures.append(
                     f"{claim.mod_id}: prepared hash changed for {relative} "
@@ -209,8 +231,8 @@ class ApplyEngine:
                 existed = target.is_file()
                 entry: dict[str, object] = {"existed": existed, "sha256": ""}
                 if existed:
-                    atomic_copy_file(target, snapshot)
-                    entry["sha256"] = hash_file(snapshot)
+                    self._link(target, snapshot)
+                    entry["sha256"] = self._sha(snapshot)
                 manifest[relative] = entry
             atomic_write_json(
                 journal_path,
@@ -240,7 +262,7 @@ class ApplyEngine:
                         restored += 1
                     continue
                 source = path_under(claim.source_path, relative)
-                if target.is_file() and hash_file(target) == claim.sha256:
+                if target.is_file() and self._sha(target) == claim.sha256:
                     if relative not in active:
                         self._require_existing_baseline_for_adoption(
                             relative,
@@ -259,8 +281,8 @@ class ApplyEngine:
                             target,
                             active.get(relative),
                         )
-                    atomic_copy_file(source, target)
-                    installed_hash = hash_file(target)
+                    self._link(source, target)
+                    installed_hash = self._sha(target)
                     if installed_hash != claim.sha256:
                         raise ApplyError(
                             f"Installed asset verification failed for {relative}: "
@@ -287,6 +309,8 @@ class ApplyEngine:
                 unchanged=unchanged,
                 recovered_transactions=recovered,
                 imported_baselines=len(imported_baselines),
+                linked=self.linked,
+                copied=self.copied,
             )
         except Exception as exc:
             if not mutation_started:
@@ -461,7 +485,7 @@ class ApplyEngine:
                     )
                     continue
             try:
-                source_hash = hash_file(source)
+                source_hash = self._sha(source)
             except OSError as exc:
                 problems[relative] = f"original backup is unreadable: {exc}"
                 continue
@@ -483,7 +507,7 @@ class ApplyEngine:
                     )
                 atomic_copy_file(source, baseline)
                 created.append((baseline, digest))
-                actual = hash_file(baseline)
+                actual = self._sha(baseline)
                 if actual != expected:
                     raise ApplyError(
                         f"Legacy backup changed while importing {relative}. "
@@ -526,7 +550,7 @@ class ApplyEngine:
                 )
                 if active_record:
                     return
-                if target.is_file() and hash_file(target) == baseline_hash:
+                if target.is_file() and self._sha(target) == baseline_hash:
                     return
                 raise ApplyError(
                     f"The vanilla baseline for {relative} no longer matches the game. "
@@ -548,8 +572,8 @@ class ApplyEngine:
 
         baseline.parent.mkdir(parents=True, exist_ok=True)
         if target.is_file():
-            atomic_copy_file(target, baseline)
-            baseline_hash = hash_file(baseline)
+            self._link(target, baseline)
+            baseline_hash = self._sha(baseline)
             atomic_write_json(
                 digest,
                 {
@@ -574,8 +598,8 @@ class ApplyEngine:
         baseline, marker, digest = self._baseline_paths(relative)
         if baseline.is_file():
             expected = self._verify_baseline_file(baseline, digest, relative)
-            atomic_copy_file(baseline, target)
-            restored_hash = hash_file(target)
+            self._link(baseline, target)
+            restored_hash = self._sha(target)
             if restored_hash != expected:
                 raise ApplyError(
                     f"Restored baseline verification failed for {relative}: "
@@ -606,7 +630,7 @@ class ApplyEngine:
                     f"Legacy baseline for {relative} has no integrity record and the saved "
                     "installation does not match the current target."
                 )
-            migrated_hash = hash_file(baseline)
+            migrated_hash = self._sha(baseline)
             atomic_write_json(
                 digest_path,
                 {
@@ -636,7 +660,7 @@ class ApplyEngine:
             raise ApplyError(
                 f"Baseline integrity record has an invalid SHA-256 for {relative}"
             ) from exc
-        actual = hash_file(baseline)
+        actual = self._sha(baseline)
         if actual != expected:
             raise ApplyError(
                 f"Vanilla baseline was changed for {relative}: expected {expected}, found {actual}"
@@ -666,20 +690,58 @@ class ApplyEngine:
         if force:
             return
         conflicts: list[str] = []
+        edited_in_place: dict[str, list[str]] = {}
         for relative in affected:
             record = active.get(relative)
             if not isinstance(record, dict):
                 continue
             target = path_under(self.dat_path, relative)
             expected = str(record["sha256"])
-            if not target.is_file() or hash_file(target) != expected:
+            if not target.is_file() or self._sha(target) != expected:
                 conflicts.append(relative)
+                owner = str(record.get("owner", ""))
+                if target.is_file() and self._shares_prepared_file(owner, relative, target):
+                    edited_in_place.setdefault(owner, []).append(relative)
         if conflicts:
             sample = ", ".join(conflicts[:5])
+            detail = ""
+            if edited_in_place:
+                # The game file is hardlinked to the prepared copy, so the same
+                # write changed both. Mark those mods stale so they are
+                # prepared again from their source.
+                self._mark_prepared_stale(edited_in_place)
+                names = ", ".join(sorted(edited_in_place))
+                detail = (
+                    f"\nSome were written in place, which also changed the prepared copy "
+                    f"of: {names}. Those mods will be prepared again from their source."
+                )
             raise ApplyError(
                 f"{len(conflicts)} active asset(s) changed outside UMML Manager "
-                f"({sample}). Refusing to overwrite them without --force."
+                f"({sample}). This usually means the game updated or repaired them, or "
+                "another mod loader wrote to them. Refusing to overwrite them without "
+                f"--force.{detail}"
             )
+
+    def _shares_prepared_file(self, owner: str, relative: str, target: Path) -> bool:
+        try:
+            record = self.store.get_mod(owner)
+        except Exception:
+            return False
+        if not record.prepared_path:
+            return False
+        try:
+            prepared = path_under(record.prepared_path, relative)
+        except SafetyError:
+            return False
+        return same_file(prepared, target)
+
+    def _mark_prepared_stale(self, mods: dict[str, list[str]]) -> None:
+        for mod_id in mods:
+            try:
+                record = self.store.get_mod(mod_id)
+                self.store.save_mod(replace(record, prepared_against=""))
+            except Exception:
+                continue
 
     def _validate_snapshot_state(
         self,
@@ -711,7 +773,7 @@ class ApplyEngine:
             target = path_under(self.dat_path, relative)
             try:
                 matches = (
-                    target.is_file() and hash_file(target) == snapshot_hash
+                    target.is_file() and self._sha(target) == snapshot_hash
                     if existed
                     else not target.exists()
                 )
@@ -739,14 +801,14 @@ class ApplyEngine:
                     if not snapshot.is_file():
                         raise ApplyError(f"Recovery snapshot is missing: {snapshot}")
                     if expected:
-                        actual_snapshot = hash_file(snapshot)
+                        actual_snapshot = self._sha(snapshot)
                         if actual_snapshot != expected:
                             raise ApplyError(
                                 f"Recovery snapshot hash mismatch for {canonical}: "
                                 f"expected {expected}, found {actual_snapshot}"
                             )
-                    atomic_copy_file(snapshot, target)
-                    if expected and hash_file(target) != expected:
+                    self._link(snapshot, target)
+                    if expected and self._sha(target) != expected:
                         raise ApplyError(
                             f"Recovery target verification failed for {canonical}"
                         )
