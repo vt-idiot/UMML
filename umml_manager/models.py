@@ -48,7 +48,7 @@ class SourceSpec:
 
 # Bumped when prepare starts recording something new (buckets, characters).
 # Records prepared by an older Manager are re-prepared in the background.
-ASSET_INDEX_VERSION = 1
+ASSET_INDEX_VERSION = 2
 
 ORIGIN_FOLDER = "folder"
 ORIGIN_ARCHIVE = "archive"
@@ -151,6 +151,9 @@ class ModRecord:
     # ownership between mods and the per-character picker.
     target_characters: dict[str, str] = field(default_factory=dict)
     dormant_characters: dict[str, str] = field(default_factory=dict)
+    # game target -> asset group (for example 3d/chara/body/bdy1026_00): files
+    # meant to be used together. Used to warn when one group mixes mods.
+    target_groups: dict[str, str] = field(default_factory=dict)
     asset_index_version: int = 0
     # Set when the source is referenced in place (for example on an external
     # drive) instead of being copied into the library's sources folder.
@@ -225,6 +228,10 @@ class ModRecord:
             dormant_characters={
                 str(key): str(value)
                 for key, value in _mapping(data.get("dormant_characters", {})).items()
+            },
+            target_groups={
+                str(key): str(value)
+                for key, value in _mapping(data.get("target_groups", {})).items()
             },
             asset_index_version=int(data.get("asset_index_version") or 0),
             origin=SourceOrigin.from_dict(data.get("origin")),

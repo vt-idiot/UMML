@@ -33,13 +33,16 @@ class CharacterRow:
     not_in_game: int
     selected: bool
     covered_by: str = ""
+    mixed_with: str = ""
 
     @property
     def status(self) -> str:
         if not self.selected:
             return "left out"
+        if self.mixed_with:
+            return f"CHECK: one part mixes files with {self.mixed_with}"
         if self.covered_by:
-            return f"covered by {self.covered_by}"
+            return f"partly overridden by {self.covered_by}"
         parts = []
         if self.active:
             parts.append(f"{self.active} active")
@@ -72,14 +75,26 @@ def build_character_rows(
     dormant = Counter(record.dormant_characters.values())
     excluded = set(profile.excluded_characters.get(record.id, ()))
     enabled = record.id in profile.enabled
-    owners = getattr(resolution, "character_owners", {}) if resolution is not None else {}
+    overridden = (
+        getattr(resolution, "characters_overridden", {}).get(record.id, {})
+        if resolution is not None
+        else {}
+    )
+    mixed: dict[str, set[str]] = {}
+    for item in getattr(resolution, "mixed_groups", ()) if resolution is not None else ():
+        if record.id in item.mods and item.character:
+            mixed.setdefault(item.character, set()).update(
+                mod for mod in item.mods if mod != record.id
+            )
 
     rows = []
     for chara_id in sorted(set(active) | set(waiting) | set(dormant)):
-        owner = owners.get(chara_id, "")
-        covered = ""
-        if enabled and owner and owner != record.id:
-            covered = mod_names.get(owner, owner)
+        covered = mixed_with = ""
+        if enabled:
+            covered = ", ".join(mod_names.get(mod, mod) for mod in overridden.get(chara_id, ()))
+            mixed_with = ", ".join(
+                mod_names.get(mod, mod) for mod in sorted(mixed.get(chara_id, ()))
+            )
         rows.append(
             CharacterRow(
                 chara_id=chara_id,
@@ -89,6 +104,7 @@ def build_character_rows(
                 not_in_game=dormant[chara_id],
                 selected=chara_id not in excluded,
                 covered_by=covered,
+                mixed_with=mixed_with,
             )
         )
     rows.sort(key=lambda row: (row.active == 0 and row.waiting == 0, row.name.casefold()))
@@ -163,8 +179,9 @@ class CharacterPickerDialog(tk.Toplevel):
             outer,
             text=(
                 "Untick a character to leave them stock in this profile (or let the next mod "
-                "supply them). A mod higher in the profile always supplies a character as a "
-                "whole, so pieces of two mods are never mixed on one character."
+                "supply them). Files resolve in profile order like UMML: a later mod wins file by "
+                "file. CHECK means one part of the character (for example an outfit's mesh and "
+                "its textures) now uses files from two mods."
             ),
             style="Muted.TLabel",
             wraplength=640,

@@ -44,3 +44,34 @@ def character_of(*names: str) -> str | None:
 
 def characters_in(names: Iterable[str]) -> set[str]:
     return {value for value in (character_of(name) for name in names) if value}
+
+
+_GROUP_SEGMENT = re.compile(r"\d{4}")
+
+
+def asset_group(name: str) -> str | None:
+    """The asset folder a file belongs to, for "true clash" detection.
+
+    Files in one group are meant to be used together (a body's mesh,
+    textures and materials), so a group assembled from two different mods is
+    worth a warning. The group is the path up to and including the first
+    segment that carries an ID:
+
+        3d/chara/body/bdy1026_00/pfb_bdy1026_00                 -> 3d/chara/body/bdy1026_00
+        sourceresources/3d/chara/body/bdy1026_00/materials/x    -> 3d/chara/body/bdy1026_00
+        chara/chr1026/chr_icon_1026                             -> chara/chr1026
+    """
+
+    if not name:
+        return None
+    path = name.replace("\\", "/").strip("/")
+    if path.casefold().startswith("sourceresources/"):
+        path = path[len("sourceresources/"):]
+    segments = [segment for segment in path.split("/") if segment]
+    for index, segment in enumerate(segments):
+        if _GROUP_SEGMENT.search(segment):
+            if index == len(segments) - 1:
+                # The ID is only in the file name: the file is its own group.
+                return path
+            return "/".join(segments[: index + 1])
+    return None

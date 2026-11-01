@@ -24,6 +24,16 @@ class Conflict:
     overridden: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class MixedGroup:
+    """One asset group (files meant to be used together) built from several mods."""
+
+    group: str
+    character: str
+    mods: tuple[str, ...]  # lowest to highest priority
+    files: dict[str, str]  # target -> winning mod
+
+
 @dataclass
 class Resolution:
     profile: str
@@ -45,10 +55,13 @@ class Resolution:
     missing_dependencies: list[str] = field(default_factory=list)
     incompatibility_conflicts: list[str] = field(default_factory=list)
     load_order_conflicts: list[str] = field(default_factory=list)
-    # character ID -> mod that supplies that whole character
-    character_owners: dict[str, str] = field(default_factory=dict)
-    # mod ID -> characters it has but does not supply (excluded or outranked)
+    # Warnings only, never blockers: an asset group (for example one outfit's
+    # mesh, textures and materials) whose final files come from several mods.
+    mixed_groups: list[MixedGroup] = field(default_factory=list)
+    # mod ID -> characters left out of it by this profile
     characters_withheld: dict[str, list[str]] = field(default_factory=dict)
+    # mod ID -> character -> mods that override some of its files
+    characters_overridden: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
     @property
     def blocking_issues(self) -> list[str]:
@@ -227,7 +240,7 @@ def resolve_profile(
                 )
             )
 
-    _apply_character_ownership(profile, enabled, records, claims, resolution)
+    _apply_profile_priority(profile, enabled, records, claims, resolution)
 
     for relative, path_claims in claims.items():
         winner = path_claims[-1]
@@ -243,6 +256,7 @@ def resolve_profile(
                 )
             )
     resolution.conflicts.sort(key=lambda item: item.path)
+    _report_overrides(profile, enabled, records, claims, resolution)
     return resolution
 
 
@@ -371,71 +385,40 @@ def _deduplicate_profile(
     return result
 
 
-def _apply_character_ownership(
+def _priority(profile: Profile, enabled: list[str]):
+    fill = set(profile.fill_gaps)
+
+    def key(mod_id: str) -> tuple[int, int]:
+        return (0 if mod_id in fill else 1, enabled.index(mod_id) if mod_id in enabled else -1)
+
+    return key
+
+
+def _apply_profile_priority(
     profile: Profile,
     enabled: list[str],
     records: dict[str, ModRecord],
     claims: dict[str, list[Claim]],
     resolution: Resolution,
 ) -> None:
-    """Give each character to exactly one mod, as a whole.
+    """Per-file "later mod wins", like UMML, plus two profile controls.
 
-    Mixing one character's files from two mods (mesh from one, textures from
-    another) is what produces broken shoulders and creases, so:
+    * Characters unticked for a mod drop that mod's files for them.
+    * "Fill gaps" mods rank below every normal mod wherever they sit.
 
-    * a profile can exclude characters from a mod;
-    * of the mods that still touch a character, the highest-priority one
-      supplies all of that character's files and the others supply none;
-    * "fill gaps" mods rank below every normal mod, wherever they sit.
-
-    Files with no character ID (shared assets) and configurable mods keep the
-    normal per-file "later mod wins" rule, except that fill-gaps mods still
-    rank lowest.
+    Everything else is plain load order: a mod that only replaces a chibi
+    model replaces just that.
     """
 
-    fill = set(profile.fill_gaps)
-
-    def priority(mod_id: str) -> tuple[int, int]:
-        return (0 if mod_id in fill else 1, enabled.index(mod_id) if mod_id in enabled else -1)
-
-    def character(claim: Claim, target: str) -> str | None:
-        record = records.get(claim.mod_id)
-        if record is None or record.option_groups:
-            return None
-        return record.target_characters.get(target)
-
+    priority = _priority(profile, enabled)
     withheld: dict[str, set[str]] = {}
-
-    # 1. Exclusions.
-    for target, path_claims in claims.items():
-        kept = []
-        for claim in path_claims:
-            ch = character(claim, target)
-            if ch and ch in profile.excluded_characters.get(claim.mod_id, ()):
-                withheld.setdefault(claim.mod_id, set()).add(ch)
-                continue
-            kept.append(claim)
-        path_claims[:] = kept
-
-    # 2. One owner per character: the highest-priority mod that touches it.
-    owners: dict[str, str] = {}
-    for target, path_claims in claims.items():
-        for claim in path_claims:
-            ch = character(claim, target)
-            if not ch:
-                continue
-            current = owners.get(ch)
-            if current is None or priority(claim.mod_id) > priority(current):
-                owners[ch] = claim.mod_id
-
-    # 3. Drop every other mod's files for owned characters, then order the
-    #    remaining claims so the last one (the winner) has the highest priority.
     for target in list(claims):
         kept = []
         for claim in claims[target]:
-            ch = character(claim, target)
-            if ch and owners.get(ch) != claim.mod_id:
-                withheld.setdefault(claim.mod_id, set()).add(ch)
+            record = records.get(claim.mod_id)
+            character = record.target_characters.get(target) if record else None
+            if character and character in profile.excluded_characters.get(claim.mod_id, ()):
+                withheld.setdefault(claim.mod_id, set()).add(character)
                 continue
             kept.append(claim)
         kept.sort(key=lambda claim: priority(claim.mod_id))
@@ -443,8 +426,57 @@ def _apply_character_ownership(
             claims[target] = kept
         else:
             del claims[target]
-
-    resolution.character_owners = dict(sorted(owners.items()))
     resolution.characters_withheld = {
         mod_id: sorted(values) for mod_id, values in sorted(withheld.items())
+    }
+
+
+def _report_overrides(
+    profile: Profile,
+    enabled: list[str],
+    records: dict[str, ModRecord],
+    claims: dict[str, list[Claim]],
+    resolution: Resolution,
+) -> None:
+    """Explain overrides per character and flag asset groups that mix mods."""
+
+    priority = _priority(profile, enabled)
+    overridden: dict[str, dict[str, set[str]]] = {}
+    groups: dict[str, dict[str, str]] = {}
+    group_character: dict[str, str] = {}
+    for target, winner in resolution.winners.items():
+        record = records.get(winner.mod_id)
+        if record is None:
+            continue
+        character = record.target_characters.get(target, "")
+        for loser in claims.get(target, [])[:-1]:
+            loser_record = records.get(loser.mod_id)
+            loser_character = (
+                loser_record.target_characters.get(target, "") if loser_record else ""
+            )
+            if loser_character and loser.mod_id != winner.mod_id:
+                overridden.setdefault(loser.mod_id, {}).setdefault(
+                    loser_character, set()
+                ).add(winner.mod_id)
+        group = record.target_groups.get(target)
+        if group:
+            groups.setdefault(group, {})[target] = winner.mod_id
+            if character:
+                group_character.setdefault(group, character)
+
+    for group, files in sorted(groups.items()):
+        mods = set(files.values())
+        if len(mods) < 2:
+            continue
+        resolution.mixed_groups.append(
+            MixedGroup(
+                group=group,
+                character=group_character.get(group, ""),
+                mods=tuple(sorted(mods, key=priority)),
+                files=dict(sorted(files.items())),
+            )
+        )
+    resolution.characters_overridden = {
+        mod_id: {character: sorted(by) for character, by in sorted(chars.items())}
+        for mod_id, chars in sorted(overridden.items())
     }
