@@ -482,6 +482,7 @@ class LibraryActions:
             f"{resolution.metadata_fingerprint or 'unverified'}",
             f"FILES          {len(resolution.winners)}",
             f"CONFLICTS      {len(resolution.conflicts)}",
+            f"MIXED PARTS    {len(resolution.mixed_groups)}",
             f"BLOCKERS       {len(resolution.blocking_issues)}",
             "",
         ]
@@ -508,6 +509,21 @@ class LibraryActions:
                 lines.extend((heading, "-" * len(heading)))
                 lines.extend(f"• {value}" for value in values)
                 lines.append("")
+        if resolution.mixed_groups:
+            heading = "Check these: one part built from several mods"
+            lines.extend((heading, "-" * len(heading)))
+            lines.append(
+                "Not a blocker. Each group below is meant to be used together (for example "
+                "an outfit's mesh, textures and materials), but its final files come from "
+                "different mods. Reorder the mods or untick the character in one of them if "
+                "it looks wrong in game."
+            )
+            for item in resolution.mixed_groups:
+                who = f" (character {item.character})" if item.character else ""
+                lines.append(f"- {item.group}{who}: " + " < ".join(item.mods))
+                for target, mod_id in item.files.items():
+                    lines.append(f"    {target}  from {mod_id}")
+            lines.append("")
         if resolution.conflicts:
             lines.extend(("Conflict winners", "=" * 72))
             for conflict in resolution.conflicts:

@@ -51,10 +51,35 @@ class CharacterRowTests(unittest.TestCase):
         }
         self.assertEqual(set(rows), {"1001", "1035", "1112", "1999"})
         self.assertEqual(rows["1001"].status, "1 active")
-        self.assertEqual(rows["1035"].status, "covered by Palmer Fix")
+        self.assertEqual(rows["1035"].status, "partly overridden by Palmer Fix")
         self.assertEqual(rows["1112"].status, "1 waiting for download")
         self.assertEqual(rows["1999"].status, "not in this game yet")
         self.assertEqual(rows["1999"].name, "Character 1999")
+
+    def test_mixed_part_is_flagged(self):
+        pack = ModRecord(
+            "bikini",
+            "Bikini Pack",
+            prepared_path="/p/bikini",
+            files={"b1/mesh": _sha(2), "b2/tex": _sha(5)},
+            target_characters={"b1/mesh": "1035", "b2/tex": "1035"},
+            target_groups={"b1/mesh": "3d/chara/body/bdy1035_00", "b2/tex": "3d/chara/body/bdy1035_00"},
+        )
+        recolor = ModRecord(
+            "recolor",
+            "Recolor",
+            prepared_path="/p/recolor",
+            files={"b2/tex": _sha(6)},
+            target_characters={"b2/tex": "1035"},
+            target_groups={"b2/tex": "3d/chara/body/bdy1035_00"},
+        )
+        profile = Profile("P", ["bikini", "recolor"])
+        resolution = resolve_profile(profile, [pack, recolor])
+        rows = {
+            row.chara_id: row
+            for row in build_character_rows(pack, profile, resolution, NAMES, {"recolor": "Recolor"})
+        }
+        self.assertEqual(rows["1035"].status, "CHECK: one part mixes files with Recolor")
 
     def test_excluded_characters_start_unticked(self):
         profile = Profile("P", ["bikini"], excluded_characters={"bikini": ["1035"]})

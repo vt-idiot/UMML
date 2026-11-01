@@ -20,7 +20,7 @@ from .asset_codec import (
     target_for,
     write_or_link,
 )
-from .characters import character_of
+from .characters import asset_group, character_of
 from .locking import FileLock, LockError
 from .models import ASSET_INDEX_VERSION, PACKAGE_UMML_ASSETS, ModRecord
 from .options import OptionError, select_source_paths
@@ -39,6 +39,7 @@ class SourceIndex:
     dormant_sources: list[str] = field(default_factory=list)
     target_characters: dict[str, str] = field(default_factory=dict)
     dormant_characters: dict[str, str] = field(default_factory=dict)
+    target_groups: dict[str, str] = field(default_factory=dict)
     missing: int = 0
 
 
@@ -191,6 +192,7 @@ class LegacyAssetAdapter:
                 dormant_sources=index.dormant_sources,
                 target_characters=index.target_characters,
                 dormant_characters=index.dormant_characters,
+                target_groups=index.target_groups,
                 asset_index_version=ASSET_INDEX_VERSION,
                 source_indexed_against=fingerprint,
                 prepared_against=fingerprint,
@@ -260,9 +262,9 @@ class LegacyAssetAdapter:
                     index.missing += 1
                     continue
                 index.missing += counted_missing
-                character = character_of(
-                    relative, getattr(encoder, "last_logical_name", "")
-                )
+                logical_name = getattr(encoder, "last_logical_name", "")
+                character = character_of(relative, logical_name)
+                group = asset_group(logical_name or relative)
                 if not outputs:
                     if counted_missing:
                         index.dormant_sources.append(relative)
@@ -275,6 +277,8 @@ class LegacyAssetAdapter:
                     data = outputs[target]
                     if character:
                         index.target_characters[target] = character
+                    if group:
+                        index.target_groups[target] = group
                     if data is None:
                         index.pending_targets[target] = relative
                         continue
