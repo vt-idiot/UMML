@@ -114,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = sub.add_parser("prepare")
     prepare.add_argument("mod_id")
     prepare.add_argument("--meta", required=True)
+    prepare.add_argument(
+        "--dat",
+        default="",
+        help="game dat folder; only assets the game has downloaded are prepared",
+    )
 
     workspace = sub.add_parser("workspace")
     workspace.add_argument("mod_id")
@@ -355,10 +360,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(record.id)
         elif args.command == "prepare":
-            record = LegacyAssetAdapter(store, args.meta).prepare(
+            record = LegacyAssetAdapter(store, args.meta, args.dat or None).prepare(
                 store.get_mod(args.mod_id)
             )
-            print(f"Prepared {len(record.files)} assets for {record.id}")
+            print(
+                f"Prepared {len(record.files)} assets for {record.id}; "
+                f"{len(record.pending_targets)} waiting for download; "
+                f"{len(record.dormant_sources)} not in this game's metadata"
+            )
         elif args.command == "workspace":
             print(store.create_workspace(args.mod_id))
         elif args.command == "profile":

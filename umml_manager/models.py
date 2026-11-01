@@ -134,6 +134,14 @@ class ModRecord:
     compatibility_notes: str = ""
     prepared_against: str = ""
     prepared_at: str = ""
+    # Asset buckets from the last prepare (normal, non-configurable mods).
+    # pending_targets: game target -> source path for assets that exist in
+    # metadata but the game has not downloaded yet; they are not prepared or
+    # deployed until the stock file appears in dat. dormant_sources: source
+    # paths with no metadata entry at all (for example characters that are not
+    # in this region yet).
+    pending_targets: dict[str, str] = field(default_factory=dict)
+    dormant_sources: list[str] = field(default_factory=list)
     # Set when the source is referenced in place (for example on an external
     # drive) instead of being copied into the library's sources folder.
     origin: SourceOrigin | None = None
@@ -195,11 +203,24 @@ class ModRecord:
             compatibility_notes=policy.compatibility_notes,
             prepared_against=str(data.get("prepared_against", "")),
             prepared_at=str(data.get("prepared_at", "")),
+            pending_targets={
+                str(key): str(value)
+                for key, value in _mapping(data.get("pending_targets", {})).items()
+            },
+            dormant_sources=_string_list(data.get("dormant_sources", [])),
             origin=SourceOrigin.from_dict(data.get("origin")),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def has_prepared_state(record: "ModRecord") -> bool:
+    """Prepared at least once, even if every asset is still waiting for download."""
+
+    return bool(record.prepared_path) and bool(
+        record.files or getattr(record, "pending_targets", None)
+    )
 
 
 @dataclass

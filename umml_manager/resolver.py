@@ -174,7 +174,7 @@ def resolve_profile(
                     f"{mod_id} needs option-aware re-preparation"
                 )
                 continue
-        elif not record.files:
+        elif not record.files and not record.pending_targets:
             resolution.unprepared.append(mod_id)
             continue
 

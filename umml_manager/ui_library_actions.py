@@ -5,7 +5,7 @@ from tkinter import filedialog, messagebox, simpledialog
 
 from .deployment import ApplyEngine, LegacyBaselineMigrationRequired
 from .legacy_adapter import LegacyAssetAdapter
-from .models import PACKAGE_UMML_ASSETS, Profile
+from .models import PACKAGE_UMML_ASSETS, Profile, has_prepared_state
 from .resolver import Resolution, resolve_profile
 from .studio import open_path
 
@@ -114,7 +114,7 @@ class LibraryActions:
     def _mod_status(self, mod) -> str:
         if mod.package_type != PACKAGE_UMML_ASSETS:
             return f"{mod.package_type}; backend needed"
-        if not mod.files or not mod.prepared_path:
+        if not has_prepared_state(mod):
             return "needs prepare"
         current = self.metadata_fingerprint.get().casefold()
         prepared = str(mod.prepared_against or "").casefold()
@@ -424,6 +424,7 @@ class LibraryActions:
             lambda: LegacyAssetAdapter(
                 self.store,
                 self.meta_path.get(),
+                self.dat_path.get(),
             ).prepare(record),
             finished,
         )
