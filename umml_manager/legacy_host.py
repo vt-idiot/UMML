@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from .process import running_game_processes
+from .window_icon import apply_window_icon
 
 _MUTATING_METHODS = {
     "load_assets",
@@ -111,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _install_guard(application.ModLoaderGUI)
     root = tk.Tk()
+    apply_window_icon(root)
     gui = application.ModLoaderGUI(root)
     root.title("UMML Studio — Legacy compatibility tools")
     root.after(250, lambda: _watch_game(root, gui))

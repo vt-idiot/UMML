@@ -21,6 +21,7 @@ from .ui_settings import SettingsPage
 from .ui_studio import StudioPage
 from .ui_system_actions import SystemActions
 from .ui_theme import BACKGROUND, SURFACE, TEXT, configure_theme
+from .window_icon import apply_window_icon
 
 PRODUCT_NAME = "Uma Mod Manager"
 
@@ -622,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     root = tk.Tk()
+    apply_window_icon(root)
     store = ManagerStore(args.root) if args.root else None
     ManagerGUI(root, store)
     root.mainloop()
