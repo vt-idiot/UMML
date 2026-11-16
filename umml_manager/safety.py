@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -138,6 +139,37 @@ def tree_digest(root: str | Path) -> str:
     return digest.hexdigest()
 
 
+# Windows refuses to replace a file another program has open. Usually that
+# is a virus scanner looking at a file that was just written and lets go
+# within a moment; if the file is still busy after these waits, the game (or
+# something else) really has it open.
+_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.3, 0.5)
+_WINDOWS = os.name == "nt"
+
+
+def replace_file(source: str | Path, target: str | Path) -> None:
+    """os.replace that rides out brief Windows file locks."""
+
+    delays = _REPLACE_RETRY_DELAYS if _WINDOWS else ()
+    for delay in (*delays, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if delay is not None:
+                time.sleep(delay)
+                continue
+            if not _WINDOWS:
+                raise
+            raise PermissionError(
+                exc.errno,
+                f"{exc.strerror or 'Access is denied'}: the file is in use by another "
+                "program. If the game is running it may have this file loaded; go "
+                "back to the title screen or close the game and try again",
+                str(target),
+            ) from exc
+
+
 def atomic_copy_file(source: str | Path, target: str | Path) -> None:
     """Copy one regular file and atomically replace the target."""
 
@@ -162,7 +194,7 @@ def atomic_copy_file(source: str | Path, target: str | Path) -> None:
             output.flush()
             os.fsync(output.fileno())
         shutil.copystat(source_path, temporary, follow_symlinks=False)
-        os.replace(temporary, target_path)
+        replace_file(temporary, target_path)
         _fsync_directory(target_path.parent)
     finally:
         temporary.unlink(missing_ok=True)
@@ -183,7 +215,7 @@ def atomic_write_json(path: str | Path, data: Any) -> None:
             output.write(payload)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temporary, target)
+        replace_file(temporary, target)
         _fsync_directory(target.parent)
     finally:
         temporary.unlink(missing_ok=True)

@@ -23,7 +23,7 @@ import stat
 import threading
 from pathlib import Path
 
-from .safety import SafetyError, atomic_copy_file, hash_file
+from .safety import SafetyError, atomic_copy_file, hash_file, replace_file
 
 CACHE_FILE = "hash-cache.json"
 _CACHE_VERSION = 1
@@ -48,12 +48,18 @@ def link_or_copy(source: str | Path, target: str | Path) -> bool:
     try:
         temporary.unlink(missing_ok=True)
         os.link(source_path, temporary)
-        os.replace(temporary, target_path)
-        return True
+    except OSError:
+        # No hardlinks here (other drive, FAT, permissions): copy instead.
+        temporary.unlink(missing_ok=True)
+        atomic_copy_file(source_path, target_path)
+        return False
+    try:
+        # A busy target would fail a copy the same way, so no copy fallback.
+        replace_file(temporary, target_path)
     except OSError:
         temporary.unlink(missing_ok=True)
-    atomic_copy_file(source_path, target_path)
-    return False
+        raise
+    return True
 
 
 def same_file(first: str | Path, second: str | Path) -> bool:
