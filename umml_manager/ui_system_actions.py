@@ -8,7 +8,6 @@ from typing import Any, Callable
 
 from .installations import ManagerInstallation, detect_preferred_installation
 from .network import tls_diagnostics
-from .process import running_game_processes
 from .studio import LEGACY_TOOLS, LegacyToolLauncher, open_path
 from .ui_theme import SURFACE, TEXT
 from .ui_windows import present_toplevel
@@ -21,13 +20,6 @@ class SystemActions:
             messagebox.showerror(
                 "Unknown Studio tool",
                 f"The requested Studio tool is not registered: {tool_id}",
-                parent=self.root,
-            )
-            return
-        if tool.mutating and getattr(self, "_game_running", False):
-            messagebox.showwarning(
-                "Close the game first",
-                f"{tool.name} can change game data. Close Umamusume and try again.",
                 parent=self.root,
             )
             return
@@ -307,32 +299,6 @@ class SystemActions:
             )
         )
         return "\n".join(lines), ready
-
-    def _refresh_game_status(self):
-        if self._closing:
-            return
-        try:
-            running = running_game_processes(
-                self.game_dir.get() or None
-            )
-            self._game_running = bool(running)
-            if running:
-                self.game_status.set("Game running")
-                self.game_badge.configure(
-                    style="Warning.Badge.TLabel"
-                )
-            else:
-                self.game_status.set("Game closed")
-                self.game_badge.configure(style="Good.Badge.TLabel")
-        except Exception:
-            self._game_running = False
-            self.game_status.set("Game status unknown")
-            self.game_badge.configure(style="Badge.TLabel")
-        self.refresh_action_states()
-        try:
-            self.root.after(5000, self._refresh_game_status)
-        except tk.TclError:
-            self._closing = True
 
     def _run_task(
         self,

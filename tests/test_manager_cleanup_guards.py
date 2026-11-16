@@ -20,7 +20,6 @@ from umml_manager.library import (
     find_mod_root,
 )
 from umml_manager.models import ModRecord, Profile
-from umml_manager.process import ProcessInspectionError, _windows_processes
 from umml_manager.regions import region_from_game_name
 from umml_manager.resolver import Resolution, resolve_profile
 from umml_manager.safety import hash_file
@@ -68,32 +67,7 @@ class CleanupGuardTests(unittest.TestCase):
                         ApplyEngine(
                             store,
                             dat,
-                            process_check=lambda _game: (),
                         ).apply(resolution)
-
-    def test_process_inspection_failure_blocks_deployment(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            dat = root / "dat"
-            dat.mkdir()
-
-            def failed_inspection(_game):
-                raise RuntimeError("process backend unavailable")
-
-            with self.assertRaisesRegex(ApplyError, "Could not verify"):
-                ApplyEngine(
-                    ManagerStore(root / "manager"),
-                    dat,
-                    process_check=failed_inspection,
-                ).apply(Resolution(profile="Default"))
-
-    def test_windows_process_backend_errors_are_not_game_closed(self):
-        with patch(
-            "umml_manager.process.subprocess.run",
-            side_effect=OSError("tasklist unavailable"),
-        ):
-            with self.assertRaises(ProcessInspectionError):
-                tuple(_windows_processes())
 
     def test_current_metadata_rejects_unfingerprinted_prepared_cache(self):
         fingerprint = "a" * 64

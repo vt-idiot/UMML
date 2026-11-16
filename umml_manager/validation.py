@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import tempfile
 import zipfile
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +16,6 @@ from .engine import (
     JOURNAL_VERSION,
 )
 from .models import ModRecord, Profile
-from .process import running_game_processes
 from .resolver import resolve_profile
 from .safety import (
     SafetyError,
@@ -69,11 +67,7 @@ def run_disposable_self_test() -> dict[str, object]:
     }
 
 
-def collect_manager_diagnostics(
-    store: ManagerStore,
-    *,
-    process_check: Callable[[str | Path | None], tuple] = running_game_processes,
-) -> dict[str, object]:
+def collect_manager_diagnostics(store: ManagerStore) -> dict[str, object]:
     """Collect read-only platform, trust, state, and target diagnostics."""
 
     from .platform_bridge import format_doctor_report
@@ -179,20 +173,6 @@ def collect_manager_diagnostics(
         installation_key or "manual/unverified",
     )
 
-    try:
-        running = process_check(game)
-    except Exception as exc:
-        add("game-process-inspection", False, str(exc))
-    else:
-        names = ", ".join(
-            sorted({getattr(item, "name", "game") for item in running})
-        )
-        add(
-            "game-process-inspection",
-            not bool(running),
-            f"game running: {names}" if running else "game closed",
-        )
-
     pending: list[str] = []
     if store.paths.transactions.is_dir():
         try:
@@ -222,7 +202,6 @@ def collect_manager_diagnostics(
                 store,
                 dat,
                 game_dir=game,
-                process_check=process_check,
             )
             active = engine._read_active_document()
             _validate_real_baseline_scope(
@@ -324,7 +303,6 @@ def verify_profile_on_disposable_copy(
     target_region: str,
     target_installation_key: str,
     metadata_fingerprint: str,
-    process_check: Callable[[str | Path | None], tuple] = running_game_processes,
 ) -> dict[str, object]:
     """Apply and restore one real profile on copied target files only.
 
@@ -336,20 +314,6 @@ def verify_profile_on_disposable_copy(
     dat = Path(dat_path).expanduser().resolve()
     if not dat.is_dir():
         raise ValidationError(f"Game dat directory not found: {dat}")
-    try:
-        running = process_check(game_dir)
-    except Exception as exc:
-        raise ValidationError(
-            f"Game process inspection failed; disposable verification stopped: {exc}"
-        ) from exc
-    if running:
-        names = ", ".join(
-            sorted({getattr(item, "name", "game") for item in running})
-        )
-        raise ValidationError(
-            f"Game is running ({names}); close it before taking a stable validation copy"
-        )
-
     records = store.list_mods()
     resolution = resolve_profile(
         profile,
@@ -372,7 +336,6 @@ def verify_profile_on_disposable_copy(
         store,
         dat,
         game_dir=game_dir,
-        process_check=process_check,
     )
     active_document = real_engine._read_active_document()
     _validate_real_baseline_scope(
@@ -409,7 +372,6 @@ def verify_profile_on_disposable_copy(
         clone_engine = ApplyEngine(
             isolated,
             clone_dat,
-            process_check=lambda _game: (),
         )
         clone_engine._ensure_baseline_scope()
         for relative in affected:
@@ -578,7 +540,7 @@ def _check_profile_lifecycle(root: Path) -> None:
     store.save_mod(first)
     store.save_mod(second)
     store.save_settings({"dat_path": str(dat)})
-    engine = ApplyEngine(store, dat, process_check=lambda _game: ())
+    engine = ApplyEngine(store, dat)
 
     first_resolution = _resolution(Profile("First", ["first"]), records)
     first_result = engine.apply(first_resolution)
@@ -655,7 +617,7 @@ def _check_legacy_baseline_migration(root: Path) -> None:
     store = ManagerStore(root / "manager")
     store.save_mod(record)
     store.save_settings({"dat_path": str(dat)})
-    engine = ApplyEngine(store, dat, process_check=lambda _game: ())
+    engine = ApplyEngine(store, dat)
 
     try:
         engine.apply(resolution)
@@ -685,7 +647,7 @@ def _check_interrupted_recovery(root: Path) -> None:
     target.write_bytes(b"partially-applied")
     store = ManagerStore(root / "manager")
     store.save_settings({"dat_path": str(dat)})
-    engine = ApplyEngine(store, dat, process_check=lambda _game: ())
+    engine = ApplyEngine(store, dat)
     transaction = (
         store.paths.transactions
         / f"apply-{engine.target_id}-self-test-interrupted"

@@ -4,7 +4,6 @@ from pathlib import Path
 from tkinter import messagebox
 
 from .models import PACKAGE_UMML_ASSETS, has_prepared_state
-from .process import running_game_processes
 from .safety import SafetyError, hash_file, validate_sha256
 from .ui_button_actions import ButtonStateActions
 
@@ -29,7 +28,7 @@ class MaintenanceActions(ButtonStateActions):
 
     def refresh_action_states(self) -> None:
         super().refresh_action_states()
-        if self._closing or self._busy or self._game_running:
+        if self._closing or self._busy:
             return
         try:
             profile = self.profile()
@@ -119,14 +118,5 @@ class MaintenanceActions(ButtonStateActions):
         else:
             lines.append("Metadata integrity: CHECK (no verified fingerprint)")
             ready = False
-
-        try:
-            running = running_game_processes(raw_game or None)
-        except Exception as exc:
-            lines.append(f"Game process inspection: FAILED ({exc})")
-            ready = False
-        else:
-            state = "game running" if running else "game closed"
-            lines.append(f"Game process inspection: READY ({state})")
 
         return "\n".join(lines), ready

@@ -62,7 +62,6 @@ class MaintenanceUiTests(unittest.TestCase):
             harness = Harness()
             harness._closing = False
             harness._busy = False
-            harness._game_running = False
             harness.metadata_fingerprint = FakeVar("")
             harness.dat_path = FakeVar(str(dat))
             harness.library = SimpleNamespace(apply_button=FakeButton())

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import umml_manager_packaged
-from umml_manager import process, startup
+from umml_manager import startup
 
 
 class _FakeSplash:
@@ -82,29 +81,6 @@ class EntryModeTests(unittest.TestCase):
         self.assertEqual(self._run([])[0][0], "splash")
         self.assertEqual(self._run(["gui"])[0][0], "splash")
         self.assertIn("Studio", self._run(["--legacy-host"])[0][1])
-
-
-class WindowsProcessListTests(unittest.TestCase):
-    def test_falls_back_to_tasklist_without_a_console_window(self):
-        seen = {}
-
-        def fake_run(command, **kwargs):
-            seen.update(kwargs)
-            return SimpleNamespace(
-                returncode=0, stdout='"umamusume.exe","4242","Console","1","100 K"\n', stderr=""
-            )
-
-        with patch.object(process, "_toolhelp_processes", side_effect=OSError("no windll")), \
-             patch.object(process.subprocess, "run", fake_run):
-            found = list(process._windows_processes())
-        self.assertEqual([(item.pid, item.name) for item in found], [(4242, "umamusume.exe")])
-        self.assertEqual(seen["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0))
-
-    def test_toolhelp_result_is_used_when_available(self):
-        native = [process.ProcessInfo(7, "umamusume.exe", "umamusume.exe")]
-        with patch.object(process, "_toolhelp_processes", return_value=native), \
-             patch.object(process.subprocess, "run", side_effect=AssertionError("no tasklist")):
-            self.assertEqual(list(process._windows_processes()), native)
 
 
 class StudioLaunchTests(unittest.TestCase):

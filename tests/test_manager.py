@@ -110,7 +110,6 @@ class ManagerTests(unittest.TestCase):
                 ApplyEngine(
                     ManagerStore(Path(temp) / "manager"),
                     dat,
-                    process_check=lambda _: (),
                 ).apply(resolution)
 
     def test_enabled_unprepared_mod_blocks_apply(self):
@@ -123,7 +122,7 @@ class ManagerTests(unittest.TestCase):
             resolution = resolve_profile(Profile("Default", ["a"]), [mod])
             self.assertEqual(resolution.unprepared, ["a"])
             with self.assertRaises(ApplyError):
-                ApplyEngine(store, dat, process_check=lambda _: ()).apply(resolution)
+                ApplyEngine(store, dat).apply(resolution)
 
     def test_archive_traversal_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -516,7 +515,7 @@ class ManagerTests(unittest.TestCase):
             )
             enabled = resolve_profile(Profile("On", ["a"]), [mod])
             disabled = resolve_profile(Profile("Off", []), [mod])
-            engine = ApplyEngine(store, dat, process_check=lambda _: ())
+            engine = ApplyEngine(store, dat)
             engine.apply(enabled)
             self.assertEqual(original.read_text(), "modded")
             engine.apply(disabled)
@@ -543,7 +542,6 @@ class ManagerTests(unittest.TestCase):
                 ApplyEngine(
                     ManagerStore(root / "manager"),
                     dat,
-                    process_check=lambda _: (),
                 ).apply(resolution)
             self.assertFalse((dat / "aa" / "aafile").exists())
 
@@ -565,11 +563,11 @@ class ManagerTests(unittest.TestCase):
                 prepared_path=str(prepared),
                 files={"aa/aafile": hash_file(source)},
             )
-            ApplyEngine(store, first_dat, process_check=lambda _: ()).apply(
+            ApplyEngine(store, first_dat).apply(
                 resolve_profile(Profile("On", ["a"]), [mod])
             )
             with self.assertRaises(ApplyError):
-                ApplyEngine(store, second_dat, process_check=lambda _: ()).apply(
+                ApplyEngine(store, second_dat).apply(
                     resolve_profile(Profile("Off", []), [mod])
                 )
 
@@ -585,7 +583,7 @@ class ManagerTests(unittest.TestCase):
                 "files": {"aa/aafile": {"sha256": "1" * 64}},
             }
             atomic_write_json(store.paths.state, active)
-            engine = ApplyEngine(store, dat, process_check=lambda _: ())
+            engine = ApplyEngine(store, dat)
             transaction = store.paths.transactions / f"apply-{engine.target_id}-test"
             transaction.mkdir(parents=True)
             atomic_write_json(
@@ -611,7 +609,7 @@ class ManagerTests(unittest.TestCase):
             target.write_text("original")
             store.paths.state.write_text("{broken")
             with self.assertRaises(ApplyError):
-                ApplyEngine(store, dat, process_check=lambda _: ()).apply(
+                ApplyEngine(store, dat).apply(
                     resolve_profile(Profile("Off", []), [])
                 )
             self.assertEqual(target.read_text(), "original")
@@ -634,7 +632,7 @@ class ManagerTests(unittest.TestCase):
                 prepared_path=str(prepared),
                 files={"aa/aafile": hash_file(source)},
             )
-            engine = ApplyEngine(store, dat, process_check=lambda _: ())
+            engine = ApplyEngine(store, dat)
             engine.apply(resolve_profile(Profile("On", ["a"]), [mod]))
             target.write_text("changed elsewhere")
             with self.assertRaises(ApplyError):

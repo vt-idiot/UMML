@@ -144,7 +144,6 @@ class ManagerConfigurableDeploymentTests(unittest.TestCase):
                 store,
                 dat,
                 game_dir=root / "game",
-                process_check=lambda _game_dir: (),
             )
 
             special_profile = Profile(
@@ -286,7 +285,6 @@ class ManagerConfigurableDeploymentTests(unittest.TestCase):
                 store,
                 dat,
                 game_dir=root / "game",
-                process_check=lambda _game_dir: (),
             )
             engine.apply(resolution)
             self.assertEqual((dat / first_target).read_bytes(), b"first payload")

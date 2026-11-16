@@ -74,7 +74,6 @@ class ManagerButtonStateTests(unittest.TestCase):
         app = object.__new__(ManagerGUI)
         app._closing = False
         app._busy = False
-        app._game_running = False
         app._gb_install_enabled = True
         app._gb_install_text = "Install"
         app._gb_can_previous = True
@@ -163,7 +162,6 @@ class ManagerButtonStateTests(unittest.TestCase):
         app.refresh_plan_button = FakeWidget()
         app.studio = SimpleNamespace(
             tool_buttons={"full": FakeWidget(), "database": FakeWidget()},
-            tool_mutating={"full": True, "database": True},
         )
         return app, mod, profile
 
@@ -204,16 +202,15 @@ class ManagerButtonStateTests(unittest.TestCase):
         self.assertEqual(app.library.prepare_button.options["state"], "normal")
         self.assertEqual(app.library.apply_button.options["state"], "normal")
 
-    def test_game_running_blocks_apply_and_entire_legacy_studio(self):
+    def test_studio_and_apply_never_wait_for_the_game(self):
+        # No "close the game first": Apply and every Studio tool stay usable.
         app, _mod, _profile = self._app()
-        app._game_running = True
         app.refresh_action_states()
-        self.assertEqual(app.library.apply_button.options["state"], "disabled")
-        self.assertEqual(app.library.apply_button.options["text"], "Close game to apply")
-        self.assertEqual(app.studio.tool_buttons["database"].options["state"], "disabled")
-        self.assertEqual(app.studio.tool_buttons["database"].options["text"], "Close game first")
-        self.assertEqual(app.studio.tool_buttons["full"].options["state"], "disabled")
-        self.assertEqual(app.studio.tool_buttons["full"].options["text"], "Close game first")
+        self.assertEqual(app.library.apply_button.options["state"], "normal")
+        self.assertEqual(app.library.apply_button.options["text"], "Apply profile")
+        for button in app.studio.tool_buttons.values():
+            self.assertEqual(button.options["state"], "normal")
+            self.assertEqual(button.options["text"], "Open")
 
     def test_busy_state_disables_mutating_and_network_actions(self):
         app, _mod, _profile = self._app()
@@ -268,27 +265,6 @@ class ButtonWrapperBehaviorTests(unittest.TestCase):
         harness.gb_query.set("second")
         self.assertEqual(harness.browse_gamebanana(), 1)
         self.assertEqual(harness.calls, 3)
-
-    def test_unknown_game_status_is_fail_closed(self):
-        class StatusBase:
-            def _refresh_game_status(self):
-                self.game_status.set("Game status unknown")
-
-        class Harness(ButtonStateActions, StatusBase):
-            def refresh_action_states(self):
-                self.refreshed = True
-
-        harness = Harness()
-        harness.game_status = FakeVar()
-        harness._game_running = False
-        harness.refreshed = False
-        harness._refresh_game_status()
-        self.assertTrue(harness._game_running)
-        self.assertTrue(harness.refreshed)
-        self.assertEqual(
-            harness.game_status.get(),
-            "Game status unknown; writes blocked",
-        )
 
     def test_typed_target_change_clears_stale_verification(self):
         saved = {

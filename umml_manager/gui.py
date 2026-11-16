@@ -45,7 +45,6 @@ class ManagerGUI(
         self.store = store or ManagerStore(default_root())
         self._closing = False
         self._busy = False
-        self._game_running = False
         self._task_serial = 0
         self._nav_buttons = {}
         self._gb_install_enabled = False
@@ -83,7 +82,6 @@ class ManagerGUI(
         self.search_library = tk.StringVar()
         self.status = tk.StringVar(value="Ready")
         self.page_title = tk.StringVar(value="Library")
-        self.game_status = tk.StringVar(value="Game status: checking…")
         self.gb_region = tk.StringVar(
             value=str(
                 settings.get("gamebanana_region", self.region.get())
@@ -118,7 +116,6 @@ class ManagerGUI(
         self.configure_discover_experience()
         self.refresh()
         self.show_page("library")
-        self._refresh_game_status()
         self.refresh_action_states()
         if self._auto_network_enabled:
             self.schedule_initial_gamebanana_load()
@@ -182,12 +179,6 @@ class ManagerGUI(
             style="Badge.TLabel",
         )
         self.profile_badge.pack(side="left", padx=4)
-        self.game_badge = ttk.Label(
-            badges,
-            textvariable=self.game_status,
-            style="Warning.Badge.TLabel",
-        )
-        self.game_badge.pack(side="left", padx=4)
 
     def _build_body(self):
         body = ttk.Frame(self.root)
@@ -309,7 +300,6 @@ class ManagerGUI(
         if self._closing or not hasattr(self, "library"):
             return
         busy = bool(self._busy)
-        game_running = bool(self._game_running)
 
         self.library.profile_box.configure(state="disabled" if busy else "readonly")
         self.library.search_entry.configure(state="disabled" if busy else "normal")
@@ -418,9 +408,7 @@ class ManagerGUI(
             dat_ready = Path(self.dat_path.get()).expanduser().is_dir()
         except (OSError, ValueError):
             pass
-        if game_running:
-            apply_text = "Close game to apply"
-        elif blockers:
+        if blockers:
             apply_text = "Fix blockers to apply"
         elif not dat_ready:
             apply_text = "Set game data to apply"
@@ -428,7 +416,7 @@ class ManagerGUI(
             apply_text = "Apply profile"
         self._configure_button(
             self.library.apply_button,
-            enabled=not busy and not game_running and not blockers and dat_ready,
+            enabled=not busy and not blockers and dat_ready,
             text=apply_text,
         )
 
@@ -508,17 +496,8 @@ class ManagerGUI(
         )
         self.settings.region_box.configure(state="disabled" if busy else "readonly")
 
-        for tool_id, button in self.studio.tool_buttons.items():
-            mutating = self.studio.tool_mutating.get(tool_id, True)
-            self._configure_button(
-                button,
-                enabled=not busy and not (game_running and mutating),
-                text=(
-                    "Close game first"
-                    if game_running and mutating
-                    else "Open"
-                ),
-            )
+        for button in self.studio.tool_buttons.values():
+            self._configure_button(button, enabled=not busy, text="Open")
 
     def show_page(self, key: str):
         if self._closing:

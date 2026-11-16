@@ -13,12 +13,15 @@ _engine._UMML_TRANSACTIONAL_APPLY_ENGINE = _BaseApplyEngine  # type: ignore[attr
 
 
 class ApplyEngine(_BaseApplyEngine):
-    """Public deployment engine with complete resolver and process guards.
+    """Public deployment engine with complete resolver checks.
 
     The transactional implementation remains isolated in ``engine.py``. Every
     supported GUI, CLI, package-level, and compatibility entry point resolves to
-    this class so callers cannot accidentally ignore planner blocker categories
-    or treat failed process inspection as proof that the game is closed.
+    this class so callers cannot accidentally ignore planner blocker categories.
+
+    There is no "is the game running" check: mods can be applied or removed
+    with the game open. A file the game has loaded fails with Windows'
+    "in use" error, and the transaction rolls back.
     """
 
     def _validate_resolution(self, resolution: Resolution) -> None:
@@ -44,22 +47,6 @@ class ApplyEngine(_BaseApplyEngine):
         if problems:
             raise ApplyError(
                 "Profile cannot be applied.\n" + "\n".join(problems)
-            )
-
-    def _assert_game_closed(self) -> None:
-        try:
-            running = self.process_check(self.game_dir)
-        except Exception as exc:
-            raise ApplyError(
-                "Could not verify whether Umamusume is running. Game-file writes "
-                f"were blocked: {exc}"
-            ) from exc
-        if running:
-            names = ", ".join(
-                sorted({getattr(item, "name", "game") for item in running})
-            )
-            raise ApplyError(
-                f"Game is running ({names}); close it before applying changes"
             )
 
 

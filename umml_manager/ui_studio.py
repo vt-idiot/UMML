@@ -12,7 +12,6 @@ class StudioPage(ScrollablePage):
         super().__init__(parent)
         self.app = app
         self.tool_buttons = {}
-        self.tool_mutating = {}
         self._legacy_cards: list[tuple[ttk.Frame, ttk.Label]] = []
         page = self.content
         page.columnconfigure(0, weight=1)
@@ -20,9 +19,9 @@ class StudioPage(ScrollablePage):
         self.introduction = ttk.Label(
             page,
             text=(
-                "Read-only analysis tools may run while the game is open. Legacy editing "
-                "features remain available through the compatibility Studio, but that host "
-                "requires the game to be closed because it still contains mutating callbacks."
+                "Veteran analysis tools and the legacy editing features of the "
+                "compatibility Studio. Both can be used while the game is open; a file "
+                "the game has loaded is reported as in use instead of being changed."
             ),
             style="Muted.TLabel",
             justify="left",
@@ -76,7 +75,6 @@ class StudioPage(ScrollablePage):
         )
         veteran_button.grid(row=2, column=0, sticky="w")
         self.tool_buttons["veterans"] = veteran_button
-        self.tool_mutating["veterans"] = False
 
         ttk.Separator(page).grid(row=4, column=0, sticky="ew", pady=(0, 14))
         ttk.Label(
@@ -112,11 +110,6 @@ class StudioPage(ScrollablePage):
                 column=0,
                 sticky="w",
             )
-            ttk.Label(
-                title,
-                text="Close game first",
-                style="Warning.Badge.TLabel",
-            ).grid(row=0, column=1, sticky="e", padx=(12, 0))
             description = ttk.Label(
                 card,
                 text=tool.description,
@@ -132,10 +125,6 @@ class StudioPage(ScrollablePage):
             )
             button.grid(row=2, column=0, sticky="w")
             self.tool_buttons[tool.id] = button
-            # Every legacy card launches the same compatibility host. Its lifetime
-            # watcher closes the whole host when Umamusume runs, including tools
-            # whose first screen appears read-only.
-            self.tool_mutating[tool.id] = True
             self._legacy_cards.append((card, description))
 
         self.set_resize_callback(self._reflow)

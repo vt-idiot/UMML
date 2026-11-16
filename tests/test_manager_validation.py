@@ -172,7 +172,6 @@ class ManagerValidationTests(unittest.TestCase):
                 target_region="global",
                 target_installation_key="steam-global",
                 metadata_fingerprint=fingerprint,
-                process_check=lambda _game: (),
             )
 
             self.assertEqual(report["status"], "passed")
@@ -227,7 +226,6 @@ class ManagerValidationTests(unittest.TestCase):
                 target_region="global",
                 target_installation_key="steam-global",
                 metadata_fingerprint=fingerprint,
-                process_check=lambda _game: (),
             )
 
             self.assertEqual(report["imported_legacy_baselines"], 1)
@@ -290,7 +288,6 @@ class ManagerValidationTests(unittest.TestCase):
                 store,
                 dat,
                 game_dir=root / "game",
-                process_check=lambda _game: (),
             ).apply(resolution)
 
             state_before = store.paths.state.read_bytes()
@@ -307,7 +304,6 @@ class ManagerValidationTests(unittest.TestCase):
                 target_region="global",
                 target_installation_key="steam-global",
                 metadata_fingerprint=fingerprint,
-                process_check=lambda _game: (),
             )
 
             self.assertEqual(report["status"], "passed")
@@ -351,7 +347,6 @@ class ManagerValidationTests(unittest.TestCase):
             ):
                 report = collect_manager_diagnostics(
                     store,
-                    process_check=lambda _game: (),
                 )
 
             self.assertTrue(report["ready"])
@@ -367,7 +362,6 @@ class ManagerValidationTests(unittest.TestCase):
             ):
                 report = collect_manager_diagnostics(
                     store,
-                    process_check=lambda _game: (),
                 )
             self.assertFalse(report["ready"])
             failed = {

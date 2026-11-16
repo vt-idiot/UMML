@@ -17,18 +17,13 @@ from umml_manager.store import ManagerStore, StoreError
 
 
 class RecoveryIntegrityTests(unittest.TestCase):
-    def _pending_recovery(
-        self,
-        root: Path,
-        *,
-        process_check,
-    ) -> tuple[ApplyEngine, Path, Path]:
+    def _pending_recovery(self, root: Path) -> tuple[ApplyEngine, Path, Path]:
         store = ManagerStore(root / "manager")
         dat = root / "dat"
         target = dat / "aa" / "aafile"
         target.parent.mkdir(parents=True)
         target.write_text("currently-modded")
-        engine = ApplyEngine(store, dat, process_check=process_check)
+        engine = ApplyEngine(store, dat)
         transaction = (
             store.paths.transactions
             / f"apply-{engine.target_id}-pending"
@@ -53,49 +48,17 @@ class RecoveryIntegrityTests(unittest.TestCase):
         )
         return engine, target, transaction
 
-    def test_running_game_blocks_recovery_before_snapshot_restore(self):
+    def test_interrupted_transaction_is_rolled_back_without_a_game_check(self):
+        # There is no "is the game running" gate any more: an interrupted
+        # apply is rolled back from its snapshot on the next apply.
         with tempfile.TemporaryDirectory() as temp:
-            checks = 0
+            engine, target, transaction = self._pending_recovery(Path(temp))
 
-            def game_starts_before_recovery(_game):
-                nonlocal checks
-                checks += 1
-                if checks == 1:
-                    return ()
-                return (SimpleNamespace(name="umamusume.exe"),)
+            result = engine.apply(resolve_profile(Profile("Off", []), []))
 
-            engine, target, transaction = self._pending_recovery(
-                Path(temp),
-                process_check=game_starts_before_recovery,
-            )
-
-            with self.assertRaisesRegex(ApplyError, "Game is running"):
-                engine.apply(resolve_profile(Profile("Off", []), []))
-
-            self.assertEqual(target.read_text(), "currently-modded")
-            self.assertTrue(transaction.is_dir())
-
-    def test_process_check_failure_blocks_recovery_before_snapshot_restore(self):
-        with tempfile.TemporaryDirectory() as temp:
-            checks = 0
-
-            def failed(_game):
-                nonlocal checks
-                checks += 1
-                if checks == 1:
-                    return ()
-                raise OSError("inspection unavailable")
-
-            engine, target, transaction = self._pending_recovery(
-                Path(temp),
-                process_check=failed,
-            )
-
-            with self.assertRaisesRegex(ApplyError, "writes were blocked"):
-                engine.apply(resolve_profile(Profile("Off", []), []))
-
-            self.assertEqual(target.read_text(), "currently-modded")
-            self.assertTrue(transaction.is_dir())
+            self.assertEqual(target.read_text(), "snapshot-before-apply")
+            self.assertFalse(transaction.exists())
+            self.assertEqual(result.recovered_transactions, 1)
 
     def test_future_registry_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -173,7 +136,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 prepared_path=str(prepared),
                 files={"aa/aafile": hash_file(source)},
             )
-            engine = ApplyEngine(store, dat, process_check=lambda _: ())
+            engine = ApplyEngine(store, dat)
             engine.apply(resolve_profile(Profile("On", ["a"]), [mod]))
             baseline = store.paths.baseline / "aa" / "aafile"
             baseline.write_text("tampered")
@@ -188,7 +151,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
             store = ManagerStore(root / "manager")
             dat = root / "dat"
             dat.mkdir()
-            engine = ApplyEngine(store, dat, process_check=lambda _: ())
+            engine = ApplyEngine(store, dat)
             transaction = (
                 store.paths.transactions
                 / f"apply-{engine.target_id}-tampered"
@@ -223,7 +186,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
             target = dat / "aa" / "aafile"
             target.parent.mkdir(parents=True)
             target.write_text("managed")
-            engine = ApplyEngine(store, dat, process_check=lambda _: ())
+            engine = ApplyEngine(store, dat)
             atomic_write_json(
                 store.paths.state,
                 {
@@ -280,7 +243,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 prepared_path=str(first_prepared),
                 files={"aa/aafile": hash_file(first_source)},
             )
-            ApplyEngine(store, dat, process_check=lambda _game: ()).apply(
+            ApplyEngine(store, dat).apply(
                 resolve_profile(Profile("First", ["first"]), [first])
             )
 
@@ -294,20 +257,14 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 prepared_path=str(second_prepared),
                 files={"aa/aafile": hash_file(second_source)},
             )
-            checks = 0
+            engine = ApplyEngine(store, dat)
+            validate = engine._validate_snapshot_state
 
-            def mutate_after_snapshot(_game):
-                nonlocal checks
-                checks += 1
-                if checks == 3:
-                    target.write_text("external-during-apply")
-                return ()
+            def mutate_after_snapshot(*args, **kwargs):
+                target.write_text("external-during-apply")
+                return validate(*args, **kwargs)
 
-            engine = ApplyEngine(
-                store,
-                dat,
-                process_check=mutate_after_snapshot,
-            )
+            engine._validate_snapshot_state = mutate_after_snapshot
             with self.assertRaisesRegex(
                 ApplyError,
                 "changed after UMML Manager captured",
@@ -344,7 +301,6 @@ class RecoveryIntegrityTests(unittest.TestCase):
             base_engine = ApplyEngine(
                 store,
                 dat,
-                process_check=lambda _game: (),
             )
             atomic_write_json(
                 store.paths.state,
@@ -382,7 +338,6 @@ class RecoveryIntegrityTests(unittest.TestCase):
             engine = RacingEngine(
                 store,
                 dat,
-                process_check=lambda _game: (),
             )
             with self.assertRaisesRegex(
                 ApplyError,
@@ -417,7 +372,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 prepared_path=str(prepared),
                 files={"aa/aafile": hash_file(source)},
             )
-            engine = ApplyEngine(store, dat, process_check=lambda _game: ())
+            engine = ApplyEngine(store, dat)
 
             with patch.object(engine, "_rollback") as rollback:
                 with self.assertRaisesRegex(ApplyError, "no vanilla baseline"):
@@ -459,7 +414,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 Profile("Same", ["same"]),
                 [mod],
             )
-            engine = ApplyEngine(store, dat, process_check=lambda _game: ())
+            engine = ApplyEngine(store, dat)
 
             with self.assertRaises(LegacyBaselineMigrationRequired) as raised:
                 engine.apply(resolution)
@@ -526,7 +481,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 prepared_path=str(prepared),
                 files=files,
             )
-            engine = ApplyEngine(store, dat, process_check=lambda _game: ())
+            engine = ApplyEngine(store, dat)
 
             with self.assertRaises(LegacyBaselineMigrationRequired) as raised:
                 engine.apply(
@@ -569,7 +524,6 @@ class RecoveryIntegrityTests(unittest.TestCase):
             engine = ApplyEngine(
                 store,
                 dat,
-                process_check=lambda _game: (),
             )
 
             with self.assertRaises(LegacyBaselineMigrationRequired) as raised:
@@ -626,7 +580,6 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 ApplyEngine(
                     store,
                     dat,
-                    process_check=lambda _game: (),
                 ).apply(
                     resolve_profile(
                         Profile("New", ["new"]),
@@ -664,7 +617,6 @@ class RecoveryIntegrityTests(unittest.TestCase):
             result = ApplyEngine(
                 store,
                 dat,
-                process_check=lambda _game: (),
             ).apply(resolve_profile(Profile("New", ["new"]), [mod]))
 
             self.assertEqual(result.installed, 1)
@@ -704,7 +656,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
                 prepared_path=str(prepared),
                 files={"aa/aafile": hash_file(source)},
             )
-            engine = ApplyEngine(store, dat, process_check=lambda _game: ())
+            engine = ApplyEngine(store, dat)
 
             result = engine.apply(
                 resolve_profile(Profile("Same", ["same"]), [mod])
@@ -720,7 +672,7 @@ class RecoveryIntegrityTests(unittest.TestCase):
             store = ManagerStore(root / "manager")
             dat = root / "dat"
             dat.mkdir()
-            engine = ApplyEngine(store, dat, process_check=lambda _: ())
+            engine = ApplyEngine(store, dat)
             atomic_write_json(
                 store.paths.state,
                 {

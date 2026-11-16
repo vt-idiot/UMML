@@ -7,10 +7,8 @@ import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from .locking import FileLock, LockError
-from .process import running_game_processes
 from .resolver import Resolution
 from .safety import (
     SafetyError,
@@ -82,12 +80,10 @@ class ApplyEngine:
         dat_path: str | Path,
         *,
         game_dir: str | Path | None = None,
-        process_check: Callable[[str | Path | None], tuple] = running_game_processes,
     ):
         self.store = store
         self.dat_path = Path(dat_path).expanduser()
         self.game_dir = game_dir
-        self.process_check = process_check
         self.target_id = _target_id(self.dat_path)
         self.hashes = HashCache(self.store.paths.root / HASH_CACHE_FILE)
         self.linked = 0
@@ -117,9 +113,7 @@ class ApplyEngine:
                 self.store.paths.locks / f"deployment-{self.target_id}.lock",
                 purpose="applying or recovering a profile",
             ):
-                self._assert_game_closed()
                 recovered = self._recover_incomplete_transactions()
-                self._assert_game_closed()
                 self._ensure_baseline_scope()
                 active_document = self._read_active_document()
                 active = dict(active_document["files"])
@@ -163,16 +157,6 @@ class ApplyEngine:
         ]
         if problems:
             raise ApplyError("Profile cannot be applied.\n" + "\n".join(problems))
-
-    def _assert_game_closed(self) -> None:
-        running = self.process_check(self.game_dir)
-        if running:
-            names = ", ".join(
-                sorted({getattr(item, "name", "game") for item in running})
-            )
-            raise ApplyError(
-                f"Game is running ({names}); close it before applying changes"
-            )
 
     def _validate_sources(self, desired: dict) -> None:
         failures: list[str] = []
@@ -244,7 +228,6 @@ class ApplyEngine:
                 manifest,
                 import_legacy_baselines=import_legacy_baselines,
             )
-            self._assert_game_closed()
             self._validate_snapshot_state(
                 active,
                 manifest,
@@ -867,7 +850,6 @@ class ApplyEngine:
                 recovered += 1
                 continue
             if phase in {"applying", "committed"}:
-                self._assert_game_closed()
                 self._rollback(transaction / "snapshots", normalized_manifest)
                 shutil.rmtree(transaction, ignore_errors=True)
                 recovered += 1

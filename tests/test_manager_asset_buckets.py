@@ -110,7 +110,7 @@ class AssetBucketTests(unittest.TestCase):
         )
         self.assertFalse(resolution.blocking_issues)
         ApplyEngine(
-            self.store, self.dat, game_dir=self.game, process_check=lambda _game: ()
+            self.store, self.dat, game_dir=self.game
         ).apply(resolution)
         self.assertNotEqual((self.dat / _target(LIVE)).read_bytes(), b"stock live")
         self.assertFalse((self.dat / _target(PENDING)).exists())

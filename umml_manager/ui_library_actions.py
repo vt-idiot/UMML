@@ -597,13 +597,6 @@ class LibraryActions:
         self.show_page("conflicts")
 
     def apply_profile(self):
-        if getattr(self, "_game_running", False):
-            messagebox.showwarning(
-                "Close the game first",
-                "Close Umamusume before applying a profile.",
-                parent=self.root,
-            )
-            return
         if not self.dat_path.get().strip():
             messagebox.showinfo(
                 "Game data required",

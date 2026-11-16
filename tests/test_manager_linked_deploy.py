@@ -46,7 +46,7 @@ class LinkedDeployTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _engine(self):
-        return ApplyEngine(self.store, self.dat, game_dir=self.game, process_check=lambda _g: ())
+        return ApplyEngine(self.store, self.dat, game_dir=self.game)
 
     def _apply(self, enabled):
         mods = self.store.list_mods()
