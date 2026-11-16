@@ -22,6 +22,7 @@ from .ui_studio import StudioPage
 from .ui_system_actions import SystemActions
 from .ui_theme import BACKGROUND, SURFACE, TEXT, configure_theme
 from .window_icon import apply_window_icon
+from .startup import close_splash, splash, suppress_splash_for_children
 
 PRODUCT_NAME = "Uma Mod Manager"
 
@@ -622,10 +623,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    splash("Opening the library and settings...")
     root = tk.Tk()
+    root.withdraw()  # show the window once it is fully built, not half-drawn
     apply_window_icon(root)
     store = ManagerStore(args.root) if args.root else None
+    splash("Building the interface...")
     ManagerGUI(root, store)
+    close_splash()
+    suppress_splash_for_children()
+    root.deiconify()
+    root.lift()
+    root.focus_force()
     root.mainloop()
     return 0
 

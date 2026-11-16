@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from .startup import SUPPRESS_SPLASH_ENV
+
 
 @dataclass(frozen=True)
 class LegacyTool:
@@ -127,6 +129,8 @@ class LegacyToolLauncher:
             command = [sys.executable, "-m", "umml_manager.legacy_host"]
         if tool.method:
             command += ["--tool", tool.method]
+        # Studio is a window of its own, so let it show the startup splash.
+        env.pop(SUPPRESS_SPLASH_ENV, None)
         return subprocess.Popen(command, env=env)
 
 

@@ -20,8 +20,22 @@ def manager_version() -> str:
         return "0+unknown"
 
 
+_CONSOLE_MODES = {"cli", "--version", "-V", "--extractor-host", "--extractor-host-probe"}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    from umml_manager.startup import attach_parent_console, close_splash, splash
+
+    first = args[0] if args else "gui"
+    if first in _CONSOLE_MODES:
+        # No window for these: drop the splash and print to the terminal.
+        close_splash()
+        attach_parent_console()
+    elif first == "--legacy-host":
+        splash("Starting UMML Studio...")
+    else:
+        splash("Starting UMML Manager...")
     if args and args[0] in {"--version", "-V"}:
         print(manager_version())
         return 0

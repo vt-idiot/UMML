@@ -68,6 +68,69 @@ def _procfs_processes() -> Iterable[ProcessInfo]:
 
 
 def _windows_processes() -> Iterable[ProcessInfo]:
+    # The Manager checks for the game every few seconds on the UI thread.
+    # Spawning tasklist.exe for that took long enough to stall window
+    # dragging; the Toolhelp snapshot takes a few milliseconds.
+    try:
+        return _toolhelp_processes()
+    except Exception:
+        return _tasklist_processes()
+
+
+def _toolhelp_processes() -> list[ProcessInfo]:
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    snapshot_fn = kernel32.CreateToolhelp32Snapshot
+    snapshot_fn.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    snapshot_fn.restype = wintypes.HANDLE
+    first_fn = kernel32.Process32FirstW
+    next_fn = kernel32.Process32NextW
+    for fn in (first_fn, next_fn):
+        fn.argtypes = (wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+        fn.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    invalid = wintypes.HANDLE(-1).value
+    snapshot = snapshot_fn(TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == invalid:
+        raise OSError(ctypes.get_last_error(), "CreateToolhelp32Snapshot failed")
+    found: list[ProcessInfo] = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = first_fn(snapshot, ctypes.byref(entry))
+        while ok:
+            pid = int(entry.th32ProcessID)
+            if pid and pid != os.getpid():
+                name = entry.szExeFile
+                found.append(ProcessInfo(pid, name, name))
+            ok = next_fn(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if not found:
+        raise OSError("Toolhelp snapshot returned no processes")
+    return found
+
+
+def _tasklist_processes() -> list[ProcessInfo]:
     try:
         result = subprocess.run(
             ["tasklist", "/FO", "CSV", "/NH"],
@@ -75,6 +138,8 @@ def _windows_processes() -> Iterable[ProcessInfo]:
             capture_output=True,
             text=True,
             timeout=10,
+            # No console window flash when the Manager has no console.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProcessInspectionError(f"Could not run tasklist: {exc}") from exc
