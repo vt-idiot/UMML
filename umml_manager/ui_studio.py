@@ -85,9 +85,9 @@ class StudioPage(ScrollablePage):
         self.legacy_explanation = ttk.Label(
             page,
             text=(
-                "These cards launch the original UMML compatibility host. They remain available "
-                "for creator workflows, but every host is closed or disabled while Umamusume is "
-                "running so legacy callbacks cannot mutate live game data."
+                "Opens the original UMML window; every loader action and editor is in "
+                "its menus. It works with the game open too; a file the game has loaded "
+                "cannot be changed until it lets go of it."
             ),
             style="Muted.TLabel",
             justify="left",
@@ -99,7 +99,9 @@ class StudioPage(ScrollablePage):
         self.cards.columnconfigure(0, weight=1)
         self.cards.columnconfigure(1, weight=1)
 
-        for index, tool in enumerate(LEGACY_TOOLS):
+        # Only the full workspace: every other legacy tool is in its menus,
+        # and each card is ~6 child windows the main window drags around.
+        for index, tool in enumerate(item for item in LEGACY_TOOLS if item.id == "full"):
             card = ttk.Frame(self.cards, style="Surface.TFrame", padding=15)
             card.columnconfigure(0, weight=1)
             title = ttk.Frame(card, style="Surface.TFrame")
@@ -136,7 +138,7 @@ class StudioPage(ScrollablePage):
         self.veteran_description.configure(wraplength=max(280, width - 64))
         self.legacy_explanation.configure(wraplength=full_wrap)
 
-        columns = responsive_columns(width, breakpoint=840)
+        columns = min(responsive_columns(width, breakpoint=840), max(1, len(self._legacy_cards)))
         card_wrap = max(250, int((width - (18 if columns == 2 else 0)) / columns) - 54)
         if columns == getattr(self, "_card_columns", None):
             # Same card grid as before: only the text wrap changes.
