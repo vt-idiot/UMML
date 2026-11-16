@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
 
-from .discovery import is_mod_root, scan_mod_candidates
+from .discovery import asset_source_root, is_mod_root, scan_mod_candidates
 from .importer_safety import (
     ImportSafetyError,
     archive_collision_key,
@@ -1092,10 +1092,7 @@ def _write_document(path: Path, data: dict[str, Any]) -> None:
 
 
 def _package_type(root: Path) -> str:
-    assets = root / "assets"
-    if assets.is_dir() and any(
-        item.is_file() for item in assets.rglob("*")
-    ):
+    if asset_source_root(root) is not None:
         return PACKAGE_UMML_ASSETS
     hachimi = root / "hachimi"
     if hachimi.is_dir() and any(

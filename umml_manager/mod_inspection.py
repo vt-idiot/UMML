@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .discovery import asset_source_root
 from .models import ModRecord
 from .source_refs import browsable_root
 
@@ -227,7 +228,7 @@ def _source_mappings(record: ModRecord) -> tuple[dict[str, tuple[str, ...]], boo
         return mappings, complete
 
     root = browsable_root(record)
-    assets = root / "assets" if root is not None else None
+    assets = asset_source_root(root) if root is not None else None
     if assets is not None and assets.is_dir():
         files = [item for item in assets.rglob("*") if item.is_file()]
         if files:

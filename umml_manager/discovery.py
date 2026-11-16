@@ -39,6 +39,9 @@ _METADATA_HINTS = {
 _ARCHIVE_NAME_HINT = re.compile(r"(?:uma|umml|hachimi|mod|skin|texture)", re.IGNORECASE)
 _ROOT_SCAN_ENTRY_LIMIT = 20_000
 _ROOT_SCAN_DEPTH_LIMIT = 64
+# Platform folders a raw (non-UMML) mod may ship instead of assets/, as
+# NaufalFajri UMML recognises them: PC-s (PC Steam), GLO (Global), DMM (Japan).
+PLATFORM_FOLDERS = ("PC-s", "GLO", "DMM")
 
 
 @dataclass(frozen=True)
@@ -71,22 +74,72 @@ def is_mod_root(path: str | Path) -> bool:
     return describe_mod_root(path) is not None
 
 
+def platform_folders(root: str | Path) -> dict[str, Path]:
+    """First-level PC-s/GLO/DMM folders of ``root`` that hold files.
+
+    Names match case-insensitively; keys are the canonical spellings.
+    """
+
+    found: dict[str, Path] = {}
+    try:
+        with os.scandir(root) as iterator:
+            entries = [entry for entry in iterator if entry.is_dir(follow_symlinks=False)]
+    except OSError:
+        return found
+    for entry in entries:
+        for name in PLATFORM_FOLDERS:
+            if (
+                name not in found
+                and entry.name.casefold() == name.casefold()
+                and _has_any_regular_file(Path(entry.path))
+            ):
+                found[name] = Path(entry.path)
+    return found
+
+
+def asset_source_root(root: str | Path, region: str = "global") -> Path | None:
+    """The folder whose files a mod installs, or None for non-asset packages.
+
+    ``assets/`` (a UMML package) wins. Otherwise the platform folder is
+    chosen the way UMML picks one for a raw mod: PC-s first, then GLO on the
+    Global client, then DMM, then GLO.
+    """
+
+    base = Path(root)
+    assets = base / "assets"
+    if assets.is_dir() and _has_any_regular_file(assets):
+        return assets
+    found = platform_folders(base)
+    if "PC-s" in found:
+        return found["PC-s"]
+    if "GLO" in found and str(region or "global").strip().casefold() == "global":
+        return found["GLO"]
+    for name in ("DMM", "GLO"):
+        if name in found:
+            return found[name]
+    return None
+
+
 def describe_mod_root(path: str | Path) -> ModCandidate | None:
     root = Path(path)
     metadata = _recognized_metadata(root)
     assets = (root / "assets").is_dir() and _has_any_regular_file(root / "assets")
     hachimi = (root / "hachimi").is_dir() and _has_any_regular_file(root / "hachimi")
-    if not (assets or hachimi or metadata == "umml-mod.json"):
+    platforms = {} if assets else platform_folders(root)
+    if not (assets or platforms or hachimi or metadata == "umml-mod.json"):
         return None
-    if metadata and assets:
+    if metadata and (assets or platforms):
         confidence = "high"
-        reason = f"{metadata} and assets/"
+        reason = f"{metadata} and " + ("assets/" if assets else "/".join(platforms) + "/")
     elif metadata == "umml-mod.json":
         confidence = "high"
         reason = metadata
     elif assets:
         confidence = "medium"
         reason = "assets/ with regular mod files"
+    elif platforms:
+        confidence = "medium"
+        reason = "/".join(platforms) + "/ platform folder (raw UMML mod)"
     else:
         confidence = "medium"
         reason = "hachimi/ runtime content"

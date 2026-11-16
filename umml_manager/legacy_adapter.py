@@ -24,6 +24,7 @@ from .asset_codec import (
     write_or_link,
 )
 from .characters import asset_group, character_of
+from .discovery import asset_source_root
 from .locking import FileLock, LockError
 from .models import ASSET_INDEX_VERSION, PACKAGE_UMML_ASSETS, ModRecord
 from .options import OptionError, select_source_paths
@@ -109,6 +110,12 @@ class LegacyAssetAdapter:
         self.dat_path = dat if dat is not None and dat.is_dir() else None
         self.compression = compression or configured_compression(store)
 
+    def _region(self) -> str:
+        try:
+            return str(self.store.load_settings(repair=False).get("region") or "global")
+        except Exception:
+            return "global"
+
     def prepare(self, record: ModRecord) -> ModRecord:
         if record.package_type != PACKAGE_UMML_ASSETS:
             raise StoreError(
@@ -127,9 +134,13 @@ class LegacyAssetAdapter:
                 # Referenced sources are read where they live (an archive is
                 # extracted to a scratch folder for the duration).
                 with self.store.open_source(record) as source:
-                    assets = source / "assets"
-                    if not assets.is_dir():
-                        raise StoreError(f"Missing assets folder: {assets}")
+                    # assets/ for UMML packages, else the PC-s/GLO/DMM folder
+                    # of a raw mod (picked by region like UMML does).
+                    assets = asset_source_root(source, self._region())
+                    if assets is None:
+                        raise StoreError(
+                            f"No assets/ or PC-s/GLO/DMM folder with files in {source}"
+                        )
                     try:
                         validate_regular_tree(assets)
                     except SafetyError as exc:
