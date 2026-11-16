@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-platform UMML entry point.
 
-The upstream 2.0.2 implementation (NaufalFajri/UMML) lives in ``UMML_core.py``.  This thin
+The upstream 2.0.3 implementation (NaufalFajri/UMML) lives in ``UMML_core.py``.  This thin
 entry point keeps that mature mod-loading code intact while supplying portable
 Steam/Proton discovery, a safer startup path, diagnostics, and a responsive ttk
 interface.
@@ -32,7 +32,7 @@ from umml_platform import (
     resolve_case_sensitive_path,
 )
 
-MODLOADER_VERSION = "2.0.2"
+MODLOADER_VERSION = "2.0.3"
 
 _REGION_PLATFORM = {
     "global": "Steam Global",
@@ -147,6 +147,9 @@ class ModLoaderGUI(core.ModLoaderGUI):
         # Upstream 2.0 methods read self.platform; the Manager owns installation
         # selection, so derive a label instead of showing upstream's picker.
         self.platform = _REGION_PLATFORM.get(str(self.region).casefold(), str(self.region))
+        # Read by upstream 2.0.3 load_assets / decrypt_assets_internal.
+        self.compression_type = tk.StringVar(master=self.root, value="LZ4HC (Default)")
+        self.is_standard_mod = False
 
         self.meta_path_load = core.load_or_decrypt_meta_simple
         self._set_startup_status(
@@ -325,8 +328,20 @@ class ModLoaderGUI(core.ModLoaderGUI):
             style="Accent.TButton",
         )
         self.assets_load_btn.grid(row=0, column=0, sticky="ew", pady=(0, 7))
-        self.assets_load_raw_btn = ttk.Button(control_frame, text="Load assets manually", command=self.load_assets_manual)
-        self.assets_load_raw_btn.grid(row=1, column=0, sticky="ew", pady=7)
+        # 2.0.3 removed "Import Asset Folder": Browse detects raw asset folders
+        # itself. Its compression choice takes that row instead.
+        compression_row = ttk.Frame(control_frame)
+        compression_row.grid(row=1, column=0, sticky="ew", pady=7)
+        compression_row.columnconfigure(1, weight=1)
+        ttk.Label(compression_row, text="Compression").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.compression_dropdown = ttk.Combobox(
+            compression_row,
+            textvariable=self.compression_type,
+            values=["LZ4HC (Default)", "LZ4 (Fast)", "LZMA (Smallest)", "Original", "None (Uncompressed)"],
+            state="readonly",
+            width=20,
+        )
+        self.compression_dropdown.grid(row=0, column=1, sticky="ew")
         self.restore_btn = ttk.Button(control_frame, text="Restore original assets", command=self.restore_original_assets)
         self.restore_btn.grid(row=2, column=0, sticky="ew", pady=7)
         self.clean_btn = ttk.Button(control_frame, text="Clean up unused assets", command=self.clean_unused_assets)

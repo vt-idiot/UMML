@@ -10,7 +10,6 @@ from .process import running_game_processes
 
 _MUTATING_METHODS = {
     "load_assets",
-    "load_assets_manual",
     "restore_original_assets",
     "unload_assets",
     "clean_unused_assets",
