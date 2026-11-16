@@ -293,6 +293,31 @@ class SettingsPage(ScrollablePage):
         return button
 
     def _reflow(self, width: int) -> None:
+        # Re-grid only when the page flips between its compact and wide
+        # layouts; any other width change just re-wraps the text.
+        compact = width < 860
+        if compact != getattr(self, "_compact_layout", None):
+            self._compact_layout = compact
+            self._relayout(width)
+        else:
+            self._rewrap(width, compact)
+
+    def _rewrap(self, width: int, compact: bool) -> None:
+        text_width = max(260, width - (62 if compact else 330))
+        full_width = max(260, width - 48)
+        for widget, wrap in (
+            (self.appearance_description, text_width),
+            (self.theme_status_label, full_width),
+            (self.installation_description, text_width),
+            (self.installation_status_label, full_width),
+            (self.paths_note, full_width),
+            (self.testing_description, text_width),
+        ):
+            widget.configure(wraplength=wrap)
+        for _frame, label, _entry, _button in self._path_rows:
+            label.configure(wraplength=full_width if compact else 260)
+
+    def _relayout(self, width: int) -> None:
         compact = width < 860
         text_width = max(260, width - (62 if compact else 330))
         full_width = max(260, width - 48)

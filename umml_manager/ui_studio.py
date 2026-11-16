@@ -137,9 +137,15 @@ class StudioPage(ScrollablePage):
         self.legacy_explanation.configure(wraplength=full_wrap)
 
         columns = responsive_columns(width, breakpoint=840)
+        card_wrap = max(250, int((width - (18 if columns == 2 else 0)) / columns) - 54)
+        if columns == getattr(self, "_card_columns", None):
+            # Same card grid as before: only the text wrap changes.
+            for _card, description in self._legacy_cards:
+                description.configure(wraplength=card_wrap)
+            return
+        self._card_columns = columns
         self.cards.columnconfigure(0, weight=1)
         self.cards.columnconfigure(1, weight=1 if columns == 2 else 0)
-        card_wrap = max(250, int((width - (18 if columns == 2 else 0)) / columns) - 54)
         for index, (card, description) in enumerate(self._legacy_cards):
             card.grid_forget()
             column = index % columns

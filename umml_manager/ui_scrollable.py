@@ -63,6 +63,8 @@ class ScrollablePage(ttk.Frame):
         )
         self._resize_callback: ResizeCallback | None = None
         self._viewport_width = 0
+        self._reflowed_width = 0
+        self._reflow_after: str | None = None
         self._bindings_finalized = False
 
         self.content.bind("<Configure>", self._content_configured, add="+")
@@ -77,6 +79,7 @@ class ScrollablePage(ttk.Frame):
     def set_resize_callback(self, callback: ResizeCallback) -> None:
         self._resize_callback = callback
         if self._viewport_width:
+            self._reflowed_width = self._viewport_width
             callback(self._viewport_width)
 
     def finalize_scroll_bindings(self) -> None:
@@ -97,14 +100,27 @@ class ScrollablePage(ttk.Frame):
 
     def _canvas_configured(self, event) -> None:
         width = max(1, int(event.width))
-        self.canvas.itemconfigure(self._content_window, width=width)
         if width == self._viewport_width:
-            return
+            return  # height-only change: nothing to re-wrap
         self._viewport_width = width
-        if self._resize_callback is not None:
-            self._resize_callback(width)
-        self.content.update_idletasks()
-        self._content_configured()
+        self.canvas.itemconfigure(self._content_window, width=width)
+        if self._resize_callback is None:
+            return
+        # A live resize (dragging an edge, Snap, maximize) sends a burst of
+        # width changes. Re-wrap once it settles instead of on every step,
+        # and let Tk lay out on its own time: forcing update_idletasks here
+        # made every step a full synchronous layout of the page.
+        if self._reflow_after is not None:
+            self.after_cancel(self._reflow_after)
+        self._reflow_after = self.after(60, self._reflow_now)
+
+    def _reflow_now(self) -> None:
+        self._reflow_after = None
+        width = self._viewport_width
+        if width == self._reflowed_width or self._resize_callback is None:
+            return
+        self._reflowed_width = width
+        self._resize_callback(width)
 
     def _bind_widget_tree(self, widget) -> None:
         widget.bind("<FocusIn>", self._focus_entered, add="+")
