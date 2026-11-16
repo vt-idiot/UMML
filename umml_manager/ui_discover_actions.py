@@ -5,7 +5,7 @@ import tkinter as tk
 import webbrowser
 from collections import OrderedDict
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 from typing import Callable, Iterable
 
 from .discovery import ModCandidate, default_search_roots, scan_mod_candidates
@@ -678,28 +678,3 @@ class DiscoverActions:
             import_all,
             self._finish_import_many,
         )
-
-    def _finish_import_many(self, result):
-        imported, failed = result
-        self.refresh()
-        tree = self.library.tree
-        ids = [record.id for record in imported if tree.exists(record.id)]
-        if ids:
-            tree.selection_set(ids)
-            tree.see(ids[0])
-            self.show_selected_mod()
-        summary = f"Imported {len(imported)} mod(s)"
-        if failed:
-            summary += f"; {len(failed)} failed"
-        self.status.set(summary)
-        if failed:
-            details = "\n\n".join(f"{name}:\n{error}" for name, error in failed[:10])
-            if len(failed) > 10:
-                details += f"\n\n...and {len(failed) - 10} more"
-            messagebox.showwarning(
-                "Some mods were not imported",
-                details,
-                parent=self.root,
-            )
-        if imported:
-            self.show_page("library")

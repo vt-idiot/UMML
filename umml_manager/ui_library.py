@@ -10,6 +10,7 @@ from .ui_mod_options import configure_mod_options
 from .ui_package_builder import launch_package_builder
 from .ui_theme import SURFACE_2, TEXT
 from .ui_character_picker import pick_characters
+from .dragdrop import enable_file_drop
 
 
 class _HiddenAction:
@@ -72,7 +73,7 @@ class LibraryPage(ttk.Frame):
         self.import_folder_button.grid(row=0, column=6, padx=3)
         self.import_archive_button = ttk.Button(
             toolbar,
-            text="Import archive",
+            text="Import archive(s)",
             command=app.import_archive,
         )
         self.import_archive_button.grid(row=0, column=7, padx=3)
@@ -112,6 +113,12 @@ class LibraryPage(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.bind("<<TreeviewSelect>>", self._selected_changed)
         self.tree.bind("<Double-1>", lambda _event: app.toggle_mod())
+        # Drop folders or archives from Explorer onto the list or the import
+        # buttons (needs the bundled tkdnd; silently off without it).
+        self.drop_enabled = enable_file_drop(
+            (self.tree, left, self.import_folder_button, self.import_archive_button),
+            app.import_paths,
+        )
 
         details = ttk.Frame(self, style="Surface.TFrame", padding=16)
         details.grid(row=1, column=1, sticky="nsew", padx=(7, 0))

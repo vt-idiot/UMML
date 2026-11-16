@@ -289,22 +289,79 @@ class LibraryActions:
         return bool(settings.get("reference_local_imports", True))
 
     def import_folder(self):
-        path = filedialog.askdirectory(parent=self.root)
+        path = filedialog.askdirectory(parent=self.root, title="Import a mod folder")
         if path:
-            reference = self._reference_local_imports()
-            self._import(lambda: self.store.import_folder(path, reference=reference))
+            self.import_paths([path])
 
     def import_archive(self):
-        path = filedialog.askopenfilename(
+        paths = filedialog.askopenfilenames(
             parent=self.root,
+            title="Import one or more mod archives",
             filetypes=(
                 ("Supported archives", "*.zip *.tar *.tar.gz *.tgz"),
                 ("All files", "*"),
             ),
         )
-        if path:
-            reference = self._reference_local_imports()
-            self._import(lambda: self.store.import_archive(path, reference=reference))
+        if paths:
+            self.import_paths(list(paths))
+
+    def import_paths(self, paths) -> None:
+        """Import picked or dropped items as one background task.
+
+        Each file is imported as an archive and each folder as one mod, exactly
+        as if it had been picked with the matching button. Nothing inside a
+        folder is searched, so a ZIP kept next to its extracted folder is not
+        imported twice.
+        """
+
+        targets = [Path(path) for path in paths]
+        if not targets:
+            return
+        reference = self._reference_local_imports()
+
+        def work():
+            imported, failed = [], []
+            for target in targets:
+                try:
+                    if target.is_file():
+                        imported.append(self.store.import_archive(target, reference=reference))
+                        continue
+                    if not target.is_dir():
+                        failed.append((target.name, "Not found"))
+                        continue
+                    imported.append(self.store.import_folder(target, reference=reference))
+                except Exception as exc:
+                    failed.append((target.name, str(exc)))
+            return imported, failed
+
+        label = targets[0].name if len(targets) == 1 else f"{len(targets)} items"
+        self._run_task(f"Importing {label}...", work, self._finish_import_many)
+
+    def _finish_import_many(self, result):
+        imported, failed = result
+        self.refresh()
+        tree = self.library.tree
+        ids = [record.id for record in imported if tree.exists(record.id)]
+        if ids:
+            # The Library list is single-select: show the first imported mod.
+            tree.selection_set(ids[0])
+            tree.see(ids[0])
+            self.show_selected_mod()
+        summary = f"Imported {len(imported)} mod(s)"
+        if failed:
+            summary += f"; {len(failed)} failed"
+        self.status.set(summary)
+        if failed:
+            details = "\n\n".join(f"{name}:\n{error}" for name, error in failed[:10])
+            if len(failed) > 10:
+                details += f"\n\n...and {len(failed) - 10} more"
+            messagebox.showwarning(
+                "Some mods were not imported",
+                details,
+                parent=self.root,
+            )
+        if imported:
+            self.show_page("library")
 
     def locate_source(self):
         mod_id = self.selected_id()

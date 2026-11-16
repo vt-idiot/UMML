@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from umml_manager.discovery import ModCandidate
 from umml_manager.ui_discover_actions import DiscoverActions
+from umml_manager.ui_library_actions import LibraryActions
 
 
 class _Tree:
@@ -25,7 +26,7 @@ class _Tree:
         return True
 
     def selection_set(self, items):
-        self.selection_set_calls.append(list(items))
+        self.selection_set_calls.append([items] if isinstance(items, str) else list(items))
 
     def see(self, _item):
         pass
@@ -49,7 +50,7 @@ class _Store:
         return self._record("archive", path, reference)
 
 
-class _App(DiscoverActions):
+class _App(DiscoverActions, LibraryActions):
     def __init__(self, selected, fail=()):
         self.local_candidates = {
             str(index): ModCandidate(
@@ -97,13 +98,13 @@ class DiscoverMultiImportTests(unittest.TestCase):
             app.store.calls,
             [("folder", "skirt", True), ("archive", "cake.zip", True), ("folder", "chibi", True)],
         )
-        self.assertEqual(app.library.tree.selection_set_calls, [["skirt", "cake.zip", "chibi"]])
+        self.assertEqual(app.library.tree.selection_set_calls, [["skirt"]])
         self.assertEqual(app.last_status, "Imported 3 mod(s)")
         self.assertEqual(app.pages, ["library"])
 
     def test_one_failure_does_not_stop_the_rest(self):
         app = _App(selected=["0", "1", "2"], fail={"cake.zip"})
-        with patch("umml_manager.ui_discover_actions.messagebox.showwarning") as warn:
+        with patch("umml_manager.ui_library_actions.messagebox.showwarning") as warn:
             app.import_local_candidate()
         self.assertEqual(len(app.store.calls), 3)
         self.assertEqual(app.last_status, "Imported 2 mod(s); 1 failed")
