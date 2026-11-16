@@ -21,6 +21,7 @@ from .ui_settings import SettingsPage
 from .ui_studio import StudioPage
 from .ui_system_actions import SystemActions
 from .ui_theme import BACKGROUND, SURFACE, TEXT, configure_theme
+from .win_parking import PageParking
 from .window_icon import apply_window_icon
 from .startup import close_splash, splash, suppress_splash_for_children
 
@@ -145,6 +146,7 @@ class ManagerGUI(
             self.progress.stop()
         except tk.TclError:
             pass
+        self._release_parked_pages()
         self.root.destroy()
 
     def _saved_installation_is_ready(self) -> bool:
@@ -220,11 +222,30 @@ class ManagerGUI(
         self.content.grid(row=0, column=1, sticky="nsew")
         self.content.columnconfigure(0, weight=1)
         self.content.rowconfigure(0, weight=1)
-        self.library = LibraryPage(self.content, self)
-        self.discover = DiscoverPage(self.content, self)
-        self.studio = StudioPage(self.content, self)
-        self.conflicts = self._build_conflicts_page()
-        self.settings = SettingsPage(self.content, self)
+        # On Windows every Tk widget is a child window, hidden or not, and
+        # moving the main window costs Windows time for every one of them on
+        # every step of the drag (measured: ~16 us each; 250 make a drag lag
+        # visibly). So each page lives in its own holder frame, and the
+        # holders of pages that are not shown are parked outside the main
+        # window (see win_parking.py). Their widgets stay alive.
+        self._page_holders = {}
+        self._parked = set()
+        self._parking = PageParking()
+
+        def holder(key):
+            frame = tk.Frame(
+                self.content, borderwidth=0, highlightthickness=0, background=BACKGROUND
+            )
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(0, weight=1)
+            self._page_holders[key] = frame
+            return frame
+
+        self.library = LibraryPage(holder("library"), self)
+        self.discover = DiscoverPage(holder("discover"), self)
+        self.studio = StudioPage(holder("studio"), self)
+        self.conflicts = self._build_conflicts_page(holder("conflicts"))
+        self.settings = SettingsPage(holder("settings"), self)
         self.pages = {
             "library": self.library,
             "discover": self.discover,
@@ -232,19 +253,47 @@ class ManagerGUI(
             "conflicts": self.conflicts,
             "settings": self.settings,
         }
-        # Only the current page is shown; the others are taken off screen
-        # (grid_remove keeps their layout for when they come back). Stacking
-        # every page in the same cell and raising one leaves all of them
-        # mapped, and on Windows each widget is a child window, so dragging
-        # the main window made Windows re-clip every page's widgets on every
-        # pixel of movement.
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")
-            page.grid_remove()
+        for frame in self._page_holders.values():
+            self._park_page(frame)
         self._shown_page = None
 
-    def _build_conflicts_page(self):
-        page = ttk.Frame(self.content)
+    def _park_page(self, frame) -> None:
+        """Hide a page holder and move it out of the main window."""
+
+        if frame in self._parked:
+            return
+        frame.grid_forget()
+        if self._parking.available:
+            # grid_forget has already unmapped it; now move it out.
+            self._parking.park(frame.winfo_id())
+        self._parked.add(frame)
+
+    def _unpark_page(self, frame) -> None:
+        if frame in self._parked:
+            if self._parking.available:
+                self._parking.restore(frame.winfo_id(), self.content.winfo_id())
+            self._parked.discard(frame)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+    def _release_parked_pages(self) -> None:
+        """Give every parked holder back to its Tk parent before Tk tears
+        the windows down, then drop the invisible parking window."""
+
+        parking = getattr(self, "_parking", None)
+        if parking is None:
+            return
+        if parking.available:
+            for frame in list(getattr(self, "_parked", ())):
+                try:
+                    parking.restore(frame.winfo_id(), self.content.winfo_id())
+                except tk.TclError:
+                    pass
+        parking.close()
+
+    def _build_conflicts_page(self, parent=None):
+        page = ttk.Frame(parent if parent is not None else self.content)
         page.columnconfigure(0, weight=1)
         page.rowconfigure(1, weight=1)
         top = ttk.Frame(page)
@@ -516,10 +565,21 @@ class ManagerGUI(
             return
         self._current_page = key
         shown = getattr(self, "_shown_page", None)
+        holders = getattr(self, "_page_holders", None)
         if shown is not page:
-            if shown is not None:
-                shown.grid_remove()
-            page.grid()
+            if holders:
+                new_holder = holders.get(key)
+                if new_holder is not None:
+                    self._unpark_page(new_holder)
+                if shown is not None:
+                    old_key = next((k for k, v in self.pages.items() if v is shown), None)
+                    old_holder = holders.get(old_key)
+                    if old_holder is not None and old_holder is not new_holder:
+                        self._park_page(old_holder)
+            else:
+                if shown is not None:
+                    shown.grid_remove()
+                page.grid()
             self._shown_page = page
         self.page_title.set(key.title())
         for name, button in self._nav_buttons.items():

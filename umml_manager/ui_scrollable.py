@@ -107,15 +107,20 @@ class ScrollablePage(ttk.Frame):
         if self._resize_callback is None:
             return
         # A live resize (dragging an edge, Snap, maximize) sends a burst of
-        # width changes. Re-wrap once it settles instead of on every step,
-        # and let Tk lay out on its own time: forcing update_idletasks here
-        # made every step a full synchronous layout of the page.
-        if self._reflow_after is not None:
+        # width changes. The first one re-wraps right away (a page that was
+        # just shown should not flash with stale wrapping); the rest of the
+        # burst is folded into one re-wrap once it settles. Tk lays out on
+        # its own time: forcing update_idletasks here made every step a full
+        # synchronous layout of the page.
+        if self._reflow_after is None:
+            self._reflow_now(settle=False)
+        else:
             self.after_cancel(self._reflow_after)
         self._reflow_after = self.after(60, self._reflow_now)
 
-    def _reflow_now(self) -> None:
-        self._reflow_after = None
+    def _reflow_now(self, settle: bool = True) -> None:
+        if settle:
+            self._reflow_after = None
         width = self._viewport_width
         if width == self._reflowed_width or self._resize_callback is None:
             return
