@@ -232,8 +232,16 @@ class ManagerGUI(
             "conflicts": self.conflicts,
             "settings": self.settings,
         }
+        # Only the current page is shown; the others are taken off screen
+        # (grid_remove keeps their layout for when they come back). Stacking
+        # every page in the same cell and raising one leaves all of them
+        # mapped, and on Windows each widget is a child window, so dragging
+        # the main window made Windows re-clip every page's widgets on every
+        # pixel of movement.
         for page in self.pages.values():
             page.grid(row=0, column=0, sticky="nsew")
+            page.grid_remove()
+        self._shown_page = None
 
     def _build_conflicts_page(self):
         page = ttk.Frame(self.content)
@@ -507,7 +515,12 @@ class ManagerGUI(
             self.status.set(f"Unknown page: {key}")
             return
         self._current_page = key
-        page.tkraise()
+        shown = getattr(self, "_shown_page", None)
+        if shown is not page:
+            if shown is not None:
+                shown.grid_remove()
+            page.grid()
+            self._shown_page = page
         self.page_title.set(key.title())
         for name, button in self._nav_buttons.items():
             button.configure(
