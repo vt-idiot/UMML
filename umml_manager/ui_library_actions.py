@@ -28,13 +28,31 @@ class LibraryActions:
         return self.library.selected_id()
 
     def current_resolution(self) -> Resolution:
-        return resolve_profile(
+        """The resolved plan for the selected profile, recomputed only when
+        the mod registry, the profiles or the target settings change."""
+
+        def key():
+            return (
+                self.store.documents_stamp(),
+                self.profile_name.get().strip() or "Default",
+                self.region.get(),
+                self.installation_key.get(),
+                self.metadata_fingerprint.get(),
+            )
+
+        cached = getattr(self, "_resolution_cache", None)
+        if cached is not None and cached[0] == key():
+            return cached[1]
+        resolution = resolve_profile(
             self.profile(),
             self.store.list_mods(),
             target_region=self.region.get(),
             target_installation_key=self.installation_key.get(),
             metadata_fingerprint=self.metadata_fingerprint.get(),
         )
+        # profile() may have just created the profile, so take the key after.
+        self._resolution_cache = (key(), resolution)
+        return resolution
 
     def refresh(self):
         selected_before = self.selected_id() if hasattr(self, "library") else None

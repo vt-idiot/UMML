@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import marshal
 import os
 import re
 import shutil
@@ -105,8 +106,17 @@ class ManagerStore:
             self.paths.root.mkdir(parents=True, exist_ok=True)
         self.settings_warning = ""
 
-    def list_mods(self) -> list[ModRecord]:
-        data = _read_json_object(
+    def documents_stamp(self) -> tuple:
+        """Identity of the mod registry and profiles on disk.
+
+        Changes whenever either file is rewritten (by this process, Studio or
+        the CLI), so it can key caches of anything computed from them.
+        """
+
+        return (_file_stamp(self.paths.registry), _file_stamp(self.paths.profiles))
+
+    def _registry_items(self) -> list:
+        data = _read_json_cached(
             self.paths.registry,
             {"version": REGISTRY_VERSION, "mods": []},
             strict=True,
@@ -122,6 +132,10 @@ class ManagerStore:
             raise StoreError(
                 f"Manager mod registry has an invalid mods list: {self.paths.registry}"
             )
+        return raw
+
+    def list_mods(self) -> list[ModRecord]:
+        raw = self._registry_items()
         try:
             records = [ModRecord.from_dict(item) for item in raw]
         except (TypeError, ValueError, KeyError) as exc:
@@ -139,10 +153,25 @@ class ManagerStore:
         return records
 
     def get_mod(self, mod_id: str) -> ModRecord:
-        for record in self.list_mods():
-            if record.id == mod_id:
-                return record
-        raise StoreError(f"Unknown mod: {mod_id}")
+        # Build only the requested record; the UI asks for the selected mod
+        # on every click, and building all of them for that adds up.
+        matches = [
+            item
+            for item in self._registry_items()
+            if isinstance(item, dict) and str(item.get("id", "")) == mod_id
+        ]
+        if len(matches) > 1:
+            raise StoreError(f"Manager mod registry contains duplicate ID: {mod_id}")
+        if not matches:
+            raise StoreError(f"Unknown mod: {mod_id}")
+        try:
+            record = ModRecord.from_dict(matches[0])
+        except (TypeError, ValueError, KeyError) as exc:
+            raise StoreError(
+                f"Manager mod registry contains an invalid record: {exc}"
+            ) from exc
+        _validate_record_identity(record)
+        return record
 
     def save_mod(self, record: ModRecord) -> None:
         _validate_record_identity(record)
@@ -187,7 +216,7 @@ class ManagerStore:
             raise StoreError(str(exc)) from exc
 
     def list_profiles(self) -> list[Profile]:
-        data = _read_json_object(
+        data = _read_json_cached(
             self.paths.profiles,
             {
                 "version": PROFILE_VERSION,
@@ -892,6 +921,45 @@ def _copy_tree_atomic(
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+# Parsed registry/profile documents, keyed by path and file identity. The UI
+# asks for the mod list many times per click; re-reading and re-parsing a
+# multi-MB mods.json each time is what made it sluggish. Callers always get
+# their own copy (marshal round-trip), so nothing they change leaks back.
+_DOCUMENT_CACHE: dict[str, tuple[tuple, bytes]] = {}
+
+
+def _file_stamp(path: Path) -> tuple:
+    try:
+        info = path.stat()
+    except OSError:
+        return ()
+    return (info.st_mtime_ns, info.st_size, info.st_ino)
+
+
+def _read_json_cached(
+    path: Path,
+    default: dict[str, Any],
+    *,
+    strict: bool,
+) -> dict[str, Any]:
+    key = str(path)
+    stamp = _file_stamp(path)
+    if not stamp:
+        _DOCUMENT_CACHE.pop(key, None)
+        return _read_json_object(path, default, strict=strict)
+    cached = _DOCUMENT_CACHE.get(key)
+    if cached is not None and cached[0] == stamp:
+        return marshal.loads(cached[1])
+    data = _read_json_object(path, default, strict=strict)
+    # Only cache what was actually read from this exact file version.
+    if _file_stamp(path) == stamp:
+        try:
+            _DOCUMENT_CACHE[key] = (stamp, marshal.dumps(data))
+        except ValueError:
+            _DOCUMENT_CACHE.pop(key, None)
+    return data
+
+
 def _read_json_object(
     path: Path,
     default: dict[str, Any],
@@ -1009,6 +1077,7 @@ def _require_document_version(
 
 
 def _write_document(path: Path, data: dict[str, Any]) -> None:
+    _DOCUMENT_CACHE.pop(str(path), None)
     if path.is_file():
         try:
             atomic_copy_file(
