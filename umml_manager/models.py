@@ -48,7 +48,7 @@ class SourceSpec:
 
 # Bumped when prepare starts recording something new (buckets, characters).
 # Records prepared by an older Manager are re-prepared in the background.
-ASSET_INDEX_VERSION = 2
+ASSET_INDEX_VERSION = 3
 
 ORIGIN_FOLDER = "folder"
 ORIGIN_ARCHIVE = "archive"
@@ -154,6 +154,8 @@ class ModRecord:
     # game target -> asset group (for example 3d/chara/body/bdy1026_00): files
     # meant to be used together. Used to warn when one group mixes mods.
     target_groups: dict[str, str] = field(default_factory=dict)
+    # Bundle compression used for the prepared files (UMML 2.0.3 modes).
+    prepared_compression: str = ""
     asset_index_version: int = 0
     # Set when the source is referenced in place (for example on an external
     # drive) instead of being copied into the library's sources folder.
@@ -233,6 +235,7 @@ class ModRecord:
                 str(key): str(value)
                 for key, value in _mapping(data.get("target_groups", {})).items()
             },
+            prepared_compression=str(data.get("prepared_compression", "")),
             asset_index_version=int(data.get("asset_index_version") or 0),
             origin=SourceOrigin.from_dict(data.get("origin")),
         )

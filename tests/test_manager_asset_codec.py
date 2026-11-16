@@ -13,6 +13,7 @@ from umml_manager.asset_codec import (
     AssetResolver,
     BundleNameCache,
     MetaIndex,
+    encode_asset,
     encrypt_asset,
 )
 from umml_manager.legacy_adapter import LegacyAssetAdapter
@@ -90,6 +91,87 @@ class EncryptAssetTests(unittest.TestCase):
         self.assertEqual(encrypt_asset(encrypted, -987654321012345), data)
 
 
+class _FakeBundle:
+    def __init__(self, calls, fail=False):
+        self.calls = calls
+        self.fail = fail
+
+    def save(self, packer):
+        self.calls.append(packer)
+        if self.fail:
+            raise RuntimeError("cannot pack")
+        return b"UnityFS\x00repacked-" + packer.encode() + b"-" * 400
+
+
+class EncodeAssetTests(unittest.TestCase):
+    """UMML 2.0.3: already-encrypted passthrough and recompression."""
+
+    def _loader(self, calls, *, raise_=False, empty=False, fail=False):
+        def load(_data):
+            if raise_:
+                raise ValueError("not a readable bundle")
+            return types.SimpleNamespace(files={} if empty else {"b": _FakeBundle(calls, fail)})
+
+        return load
+
+    def test_unreadable_bundle_is_treated_as_already_encrypted(self):
+        data = _bundle(1)
+        for kwargs in ({"raise_": True}, {"empty": True}):
+            out = encode_asset(data, 999, "LZ4HC (Default)", loader=self._loader([], **kwargs))
+            self.assertEqual(out, data)  # not XORed a second time
+
+    def test_bundles_are_recompressed_then_encrypted(self):
+        for mode, packer in (
+            ("LZ4HC (Default)", "lz4hc"),
+            ("LZ4 (Fast)", "lz4"),
+            ("LZMA (Smallest)", "lzma"),
+            ("None (Uncompressed)", "none"),
+        ):
+            calls = []
+            out = encode_asset(_bundle(2), 999, mode, loader=self._loader(calls))
+            self.assertEqual(calls, [packer])
+            repacked = b"UnityFS\x00repacked-" + packer.encode() + b"-" * 400
+            self.assertEqual(out, encrypt_asset(repacked, 999))
+
+    def test_lz4hc_falls_back_to_lz4_when_unityPy_lacks_it(self):
+        calls = []
+
+        class OldBundle(_FakeBundle):
+            def save(self, packer):
+                if packer == "lz4hc":
+                    calls.append("lz4hc")
+                    raise NotImplementedError("UnityFS - Packer:", "lz4hc")
+                return super().save(packer)
+
+        def load(_data):
+            return types.SimpleNamespace(files={"b": OldBundle(calls)})
+
+        out = encode_asset(_bundle(4), 999, "LZ4HC (Default)", loader=load)
+        self.assertEqual(calls, ["lz4hc", "lz4"])
+        self.assertEqual(out, encrypt_asset(b"UnityFS\x00repacked-lz4" + b"-" * 400, 999))
+
+    def test_original_mode_and_pack_failures_keep_the_file(self):
+        data = _bundle(3)
+        calls = []
+        self.assertEqual(
+            encode_asset(data, 999, "Original", loader=self._loader(calls)),
+            encrypt_asset(data, 999),
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(
+            encode_asset(data, 999, "LZ4HC (Default)", loader=self._loader([], fail=True)),
+            encrypt_asset(data, 999),
+        )
+
+    def test_audio_is_encrypted_without_loading(self):
+        data = b"AFS2" + bytes(range(256)) * 3
+
+        def boom(_data):
+            raise AssertionError("audio must not be loaded as a bundle")
+
+        self.assertEqual(encode_asset(data, 77, loader=boom), encrypt_asset(data, 77))
+
+
 class ResolverTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -102,6 +184,8 @@ class ResolverTests(unittest.TestCase):
                 ("chara/chr1002/pfb_bdy1002", "BBhash2", 222),
                 ("sound/c/snd_voi_1001.awb", "CChash3", 0),
                 ("sound/c/snd_voi_1001.acb", "DDhash4", 0),
+                ("3d/chara/body/bdy1026_00/pfb_bdy1026_00", "AYRQ75JJ6FVTL3CVBEAZBH6KT7DXXJQ4", 333),
+                ("movie/m/intro.usm", "EEhash5", 0),
             ],
         )
         self.calls = []
@@ -128,9 +212,14 @@ class ResolverTests(unittest.TestCase):
         cases = {
             "chara/chr1001/pfb_bdy1001": (_bundle(1), "path", "AAhash1"),
             "renamed_bundle": (_bundle(2), "bundle-name", "BBhash2"),
-            "Sound/SND_VOI_1001.awb": (b"AFS2" + b"\0" * 300, "audio-pair", "CChash3"),
-            "Sound/SND_VOI_1001.acb": (b"@UTF" + b"\0" * 300, "audio-pair", "DDhash4"),
+            "Sound/SND_VOI_1001.awb": (b"AFS2" + b"\0" * 300, "audio-name", "CChash3"),
+            "Sound/SND_VOI_1001.acb": (b"@UTF" + b"\0" * 300, "audio-name", "DDhash4"),
+            "AYRQ75JJ6FVTL3CVBEAZBH6KT7DXXJQ4": (_bundle(3), "hash", "AYRQ75JJ6FVTL3CVBEAZBH6KT7DXXJQ4"),
+            "pc-s/chara/chr1002/pfb_bdy1002": (_bundle(4), "prefix", "BBhash2"),
+            "extras/intro.usm": (b"CRID" + b"\0" * 300, "audio-name", "EEhash5"),
             "readme.txt": (b"hello", "not-an-asset", None),
+            "setting.json": (b"UnityFS fake", "not-an-asset", None),
+            "notes.bin": (b"plain data", "not-an-asset", None),
         }
         for relative, (data, _reason, _hash) in cases.items():
             (assets / relative).parent.mkdir(parents=True, exist_ok=True)
@@ -140,13 +229,24 @@ class ResolverTests(unittest.TestCase):
             self.assertEqual(result.reason, reason, relative)
             self.assertEqual(result.row.hash_name if result.row else None, hash_name, relative)
 
-    def test_audio_without_its_pair_is_not_matched_by_suffix(self):
+    def test_audio_without_its_pair_is_matched_by_name(self):
+        # UMML 2.0.3 dropped the "both .acb and .awb present" requirement.
         resolver = self._resolver()
         lone = self.root / "lone" / "snd_voi_1001.awb"
         lone.parent.mkdir()
         lone.write_bytes(b"AFS2" + b"\0" * 300)
         result = resolver.resolve("lone/snd_voi_1001.awb", lone, lone.read_bytes())
-        self.assertEqual(result.reason, "not-in-metadata")
+        self.assertEqual(result.reason, "audio-name")
+        self.assertEqual(result.row.hash_name, "CChash3")
+
+    def test_hash_named_files_resolve_without_parsing_and_know_their_name(self):
+        resolver = self._resolver()
+        source = self.root / "AYRQ75JJ6FVTL3CVBEAZBH6KT7DXXJQ4"
+        source.write_bytes(_bundle(5))
+        result = resolver.resolve(source.name, source, source.read_bytes())
+        self.assertEqual(result.reason, "hash")
+        self.assertEqual(result.logical_name, "3d/chara/body/bdy1026_00/pfb_bdy1026_00")
+        self.assertEqual(self.calls, [])
 
     def test_bundle_names_are_parsed_once_and_persisted(self):
         cache_path = self.root / "cache.json"

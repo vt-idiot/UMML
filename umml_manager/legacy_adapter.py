@@ -10,11 +10,14 @@ from pathlib import Path
 
 from .asset_codec import (
     CACHE_NAME,
+    DEFAULT_COMPRESSION,
     AssetResolver,
     BundleNameCache,
     MetadataError,
     MetaIndex,
-    encrypt_asset,
+    configured_compression,
+    encode_asset,
+    load_bundle,
     iter_source_files,
     sha256_bytes,
     target_for,
@@ -50,9 +53,18 @@ class SourceEncoder:
     of ``None`` and are not encrypted at all (they are pending).
     """
 
-    def __init__(self, resolver: AssetResolver, names: BundleNameCache | None = None):
+    def __init__(
+        self,
+        resolver: AssetResolver,
+        names: BundleNameCache | None = None,
+        *,
+        compression: str = DEFAULT_COMPRESSION,
+        loader=load_bundle,
+    ):
         self.resolver = resolver
         self._names = names
+        self.compression = compression
+        self._loader = loader
         self.target_filter = None
         self.last_logical_name = ""
 
@@ -67,7 +79,11 @@ class SourceEncoder:
             return {}, 1
         if self.target_filter is not None and not self.target_filter(target):
             return {target: None}, 0
-        return {target: encrypt_asset(data, resolution.row.key)}, 0
+        return {
+            target: encode_asset(
+                data, resolution.row.key, self.compression, loader=self._loader
+            )
+        }, 0
 
     def close(self) -> None:
         if self._names is not None:
@@ -82,6 +98,7 @@ class LegacyAssetAdapter:
         store: ManagerStore,
         meta_path: str | Path,
         dat_path: str | Path | None = None,
+        compression: str | None = None,
     ):
         """``dat_path`` enables bucketing: only targets the game has already
         downloaded are prepared; the rest are recorded as pending."""
@@ -90,6 +107,7 @@ class LegacyAssetAdapter:
         self.meta_path = Path(meta_path).expanduser()
         dat = Path(dat_path).expanduser() if dat_path else None
         self.dat_path = dat if dat is not None and dat.is_dir() else None
+        self.compression = compression or configured_compression(store)
 
     def prepare(self, record: ModRecord) -> ModRecord:
         if record.package_type != PACKAGE_UMML_ASSETS:
@@ -193,6 +211,7 @@ class LegacyAssetAdapter:
                 target_characters=index.target_characters,
                 dormant_characters=index.dormant_characters,
                 target_groups=index.target_groups,
+                prepared_compression=self.compression,
                 asset_index_version=ASSET_INDEX_VERSION,
                 source_indexed_against=fingerprint,
                 prepared_against=fingerprint,
@@ -222,7 +241,7 @@ class LegacyAssetAdapter:
         except MetadataError as exc:
             raise StoreError(str(exc)) from exc
         names = BundleNameCache(self.store.paths.root / CACHE_NAME)
-        return SourceEncoder(AssetResolver(meta, names), names)
+        return SourceEncoder(AssetResolver(meta, names), names, compression=self.compression)
 
     def _encode_sources(
         self,

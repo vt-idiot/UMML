@@ -149,6 +149,27 @@ class AssetBucketTests(unittest.TestCase):
         old = replace(prepared, asset_index_version=0, target_characters={})
         self.assertTrue(probe._record_needs_auto_prepare(old))
 
+    def test_changing_compression_reprepares(self):
+        prepared = self._prepare()
+        self.assertEqual(prepared.prepared_compression, "LZ4HC (Default)")
+
+        store = self.store
+
+        class _Needs(AutoPrepareActions):
+            def __init__(self, dat):
+                self.dat_path = _Var(str(dat))
+                self.meta_path = _Var(__file__)
+                self.metadata_fingerprint = _Var("")
+                self.store = store
+
+        probe = _Needs(self.dat)
+        self.assertFalse(probe._record_needs_auto_prepare(prepared))
+        self.store.save_settings({"compression": "LZMA (Smallest)"})
+        self.assertTrue(probe._record_needs_auto_prepare(prepared))
+        again = self._prepare(prepared)
+        self.assertEqual(again.prepared_compression, "LZMA (Smallest)")
+        self.assertFalse(probe._record_needs_auto_prepare(again))
+
     def test_buckets_survive_registry_round_trip(self):
         prepared = self._prepare()
         reloaded = ManagerStore(self.root / "manager").get_mod(prepared.id)

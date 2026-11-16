@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .legacy_adapter import LegacyAssetAdapter
+from .asset_codec import configured_compression
 from .models import ASSET_INDEX_VERSION, PACKAGE_UMML_ASSETS, has_prepared_state
 from .ui_maintenance_actions import MaintenanceActions
 
@@ -349,6 +350,14 @@ class AutoPrepareActions(MaintenanceActions):
             and getattr(record, "asset_index_version", ASSET_INDEX_VERSION) < ASSET_INDEX_VERSION
         ):
             # Prepared by an older Manager: no buckets or character data yet.
+            return True
+        if (
+            not record.option_groups
+            and getattr(record, "prepared_compression", "")
+            and record.prepared_compression
+            != configured_compression(getattr(self, "store", None))
+        ):
+            # The compression setting changed since this mod was prepared.
             return True
         if fingerprint and prepared_against != fingerprint:
             return True

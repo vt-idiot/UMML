@@ -4,6 +4,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
 
+from .asset_codec import COMPRESSION_MODES, configured_compression
 from .ui_scrollable import ScrollablePage
 from .ui_support_bundle import create_support_bundle_from_ui
 from .ui_theme import (
@@ -149,6 +150,21 @@ class SettingsPage(ScrollablePage):
             width=12,
         )
         self.region_box.pack(side="left", padx=8)
+        ttk.Label(
+            self.region_frame,
+            text="Asset compression",
+            style="Surface.TLabel",
+        ).pack(side="left", padx=(16, 0))
+        self.compression = tk.StringVar(master=page, value=configured_compression(app.store))
+        self.compression_box = ttk.Combobox(
+            self.region_frame,
+            textvariable=self.compression,
+            values=COMPRESSION_MODES,
+            state="readonly",
+            width=20,
+        )
+        self.compression_box.pack(side="left", padx=8)
+        self.compression_box.bind("<<ComboboxSelected>>", self._compression_selected)
         self.paths_note = ttk.Label(
             self.paths,
             text=(
@@ -504,6 +520,23 @@ class SettingsPage(ScrollablePage):
             )
             return
         self.app.status.set(f"Opened {label}")
+
+    def _compression_selected(self, _event=None) -> None:
+        """Save the bundle compression for prepared mods (UMML 2.0.3 modes).
+
+        Mods prepared with another mode are re-prepared in the background.
+        """
+
+        value = self.compression.get()
+        try:
+            self.app.store.save_settings({"compression": value})
+        except Exception as exc:
+            self.app.status.set(f"Could not save compression: {exc}")
+            return
+        self.app.status.set(f"Asset compression set to {value}; affected mods will be prepared again")
+        schedule = getattr(self.app, "_schedule_auto_prepare_scan", None)
+        if schedule is not None:
+            schedule(delay=200)
 
     def _theme_selected(self, _event=None) -> None:
         self._apply_theme(persist=True)

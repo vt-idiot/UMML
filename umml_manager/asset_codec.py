@@ -7,8 +7,9 @@ The Manager used to call it once for the whole mod and again once per source
 file, then fall back to its own lookup, so an unmatched bundle could be parsed
 three times per prepare.
 
-This module keeps the same resolution rules and produces byte-identical output,
-but:
+This module follows the same rules as UMML 2.0.3 (lookup order, accepted
+files, already-encrypted passthrough, recompression) and produces the same
+bytes, but:
 
 * loads metadata table ``a`` into memory once per prepare;
 * resolves every source file exactly once;
@@ -30,8 +31,25 @@ from typing import Callable, Iterator
 
 AB_KEY = b"\x53\x2B\x46\x31\xE4\xA7\xB9\x47\x3E\x7C\xFB"
 AUDIO_VIDEO_SUFFIXES = (".acb", ".awb", ".usm")
-PAIRED_AUDIO_SUFFIXES = (".acb", ".awb")
 UNITY_MAGIC = b"UnityFS"
+ASSET_MAGICS = (b"UnityFS", b"@UTF", b"AFS2", b"CRID")
+# Files UMML 2.0.3 never treats as assets.
+IGNORED_NAMES = frozenset(
+    ("setting.yml", "setting.json", "meta.json", "mod_pack.png", "desktop.ini", ".ds_store", "thumbs.db")
+)
+IGNORED_SUFFIXES = (".txt", ".md", ".png", ".jpg", ".jpeg", ".zip", ".bat", ".py")
+# Leading folders some mods wrap their asset paths in.
+STRIPPED_PREFIXES = ("assets", "pc-s", "dmm", "glo")
+
+# Bundle recompression before encryption, as in UMML 2.0.3.
+COMPRESSION_MODES = (
+    "LZ4HC (Default)",
+    "LZ4 (Fast)",
+    "LZMA (Smallest)",
+    "Original",
+    "None (Uncompressed)",
+)
+DEFAULT_COMPRESSION = COMPRESSION_MODES[0]
 CACHE_NAME = "bundle-names.json"
 _CACHE_VERSION = 1
 
@@ -44,6 +62,7 @@ class MetadataError(RuntimeError):
 class AssetRow:
     hash_name: str
     key: int
+    name: str = ""  # logical game name (column n)
 
 
 @dataclass(frozen=True)
@@ -53,8 +72,10 @@ class Resolution:
     relative: str
     sha256: str
     row: AssetRow | None
-    reason: str  # "path", "audio-pair", "bundle-name", "not-in-metadata", "not-an-asset"
-    logical_name: str = ""  # bundle name used for the match, when it differs from the path
+    # "hash", "path", "prefix", "audio-name", "bundle-name",
+    # "not-in-metadata", "not-an-asset"
+    reason: str
+    logical_name: str = ""  # the game's name for the asset when known
 
 
 class MetaIndex:
@@ -64,6 +85,7 @@ class MetaIndex:
         self._rows = rows
         self.has_encrypt = has_encrypt
         self._suffix_index: dict[str, AssetRow] | None = None
+        self._hash_index: dict[str, AssetRow] | None = None
 
     @classmethod
     def load(cls, meta_path: str | Path) -> "MetaIndex":
@@ -91,7 +113,7 @@ class MetaIndex:
                 if name is None or not hash_name:
                     continue
                 key = int(record[2] or 0) if has_encrypt else 0
-                rows.setdefault(str(name), AssetRow(str(hash_name), key))
+                rows.setdefault(str(name), AssetRow(str(hash_name), key, str(name)))
         except sqlite3.Error as exc:
             raise MetadataError(f"Could not read metadata: {exc}") from exc
         finally:
@@ -103,6 +125,16 @@ class MetaIndex:
 
     def lookup(self, name: str) -> AssetRow | None:
         return self._rows.get(name)
+
+    def lookup_hash(self, hash_name: str) -> AssetRow | None:
+        """Equivalent of ``WHERE h=?`` (first row)."""
+
+        if self._hash_index is None:
+            index: dict[str, AssetRow] = {}
+            for row in self._rows.values():
+                index.setdefault(row.hash_name, row)
+            self._hash_index = index
+        return self._hash_index.get(hash_name)
 
     def lookup_suffix(self, file_name: str) -> AssetRow | None:
         """Equivalent of ``WHERE n LIKE '%/<file_name>'`` (first row).
@@ -215,8 +247,100 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def hash_style_name(file_name: str) -> str | None:
+    """The game hash a file is named after (32 letters/digits), if any."""
+
+    stem = os.path.splitext(file_name)[0]
+    if len(stem) == 32 and stem.isalnum():
+        return stem
+    if len(file_name) == 32 and file_name.isalnum():
+        return file_name
+    return None
+
+
 def looks_like_game_asset(relative: str, head: bytes) -> bool:
-    return relative.casefold().endswith(AUDIO_VIDEO_SUFFIXES) or head.startswith(UNITY_MAGIC)
+    """UMML 2.0.3's upfront filter."""
+
+    name = os.path.basename(relative).lower()
+    if name in IGNORED_NAMES or name.endswith(IGNORED_SUFFIXES):
+        return False
+    if name.endswith(AUDIO_VIDEO_SUFFIXES) or hash_style_name(name):
+        return True
+    return head.startswith(ASSET_MAGICS)
+
+
+def packer_for(mode: str) -> str | None:
+    """UnityPy packer for a compression mode; None keeps the file as is."""
+
+    lowered = str(mode).lower()
+    if "lz4hc" in lowered:
+        return "lz4hc"
+    if "lz4" in lowered:
+        return "lz4"
+    if "lzma" in lowered:
+        return "lzma"
+    if "none" in lowered or "uncompressed" in lowered:
+        return "none"
+    return None
+
+
+def configured_compression(store) -> str:
+    """The Manager's compression setting (UMML 2.0.3's default if unset)."""
+
+    try:
+        value = str(store.load_settings(repair=False).get("compression", "") or "")
+    except Exception:
+        value = ""
+    return value if value in COMPRESSION_MODES else DEFAULT_COMPRESSION
+
+
+def load_bundle(data: bytes):
+    import UnityPy
+
+    return UnityPy.load(data)
+
+
+def encode_asset(
+    data: bytes,
+    key_long: int,
+    compression: str = DEFAULT_COMPRESSION,
+    *,
+    loader: Callable[[bytes], object] = load_bundle,
+) -> bytes:
+    """Turn one mod file into the bytes the game expects, like UMML 2.0.3.
+
+    * A UnityFS file that UnityPy cannot open is taken to be already
+      encrypted by the game and is returned unchanged (no second XOR).
+    * Other bundles are re-saved with the chosen packer, then encrypted.
+    * Everything else is encrypted as is.
+    """
+
+    if data.startswith(UNITY_MAGIC):
+        try:
+            environment = loader(data)
+            files = getattr(environment, "files", None)
+        except Exception:
+            return bytes(data)
+        if not files:
+            return bytes(data)
+        packer = packer_for(compression)
+        if packer is not None:
+            bundle = list(files.values())[0]
+            try:
+                data = bundle.save(packer=packer)
+            except NotImplementedError:
+                # UnityPy 1.25.2 (the version bundled with the Manager) has
+                # no "lz4hc" packer and UMML 2.0.3 then silently keeps the
+                # file uncompressed. Use plain LZ4 instead: UnityPy 1.25.4's
+                # lz4hc output is effectively the same size.
+                if packer == "lz4hc":
+                    try:
+                        data = bundle.save(packer="lz4")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    return encrypt_asset(data, key_long)
 
 
 def iter_source_files(assets: Path) -> Iterator[tuple[str, Path]]:
@@ -225,13 +349,15 @@ def iter_source_files(assets: Path) -> Iterator[tuple[str, Path]]:
 
 
 class AssetResolver:
-    """Resolve mod source files to metadata rows using the legacy rules.
+    """Resolve mod source files to metadata rows using UMML 2.0.3's rules.
 
-    Order, per source file (non-hash mode, same as UMML 2.0.2):
-      1. skip anything that is not a UnityFS bundle or .acb/.awb/.usm;
-      2. exact logical-name match on the path relative to ``assets``;
-      3. .acb/.awb with both pair files present: match by file name suffix;
-      4. other files: read the bundle's internal name and match that.
+    Order, per source file:
+      1. skip anything UMML 2.0.3 does not treat as an asset;
+      2. a file named after a game hash (32 letters/digits): match column h;
+      3. exact logical-name match on the path relative to ``assets``;
+      4. the same with a leading assets/, pc-s/, dmm/ or glo/ removed;
+      5. .acb/.awb/.usm: match by file name at the end of a logical name;
+      6. UnityFS bundles: read the bundle's internal name and match that.
     """
 
     def __init__(
@@ -246,22 +372,36 @@ class AssetResolver:
         self._read_bundle_name = bundle_name_reader
         self.bundle_parses = 0
 
+    def _found(self, relative, digest, row, reason) -> Resolution:
+        return Resolution(relative, digest, row, reason, row.name)
+
     def resolve(self, relative: str, source: Path, data: bytes) -> Resolution:
         digest = sha256_bytes(data)
-        if not looks_like_game_asset(relative, data[:8]):
+        relative = relative.replace("\\", "/")
+        if not looks_like_game_asset(relative, data[:16]):
             return Resolution(relative, digest, None, "not-an-asset")
+
+        file_name = os.path.basename(relative)
+        hashed = hash_style_name(file_name)
+        if hashed:
+            row = self.meta.lookup_hash(hashed)
+            if row is not None:
+                return self._found(relative, digest, row, "hash")
 
         row = self.meta.lookup(relative)
         if row is not None:
-            return Resolution(relative, digest, row, "path")
+            return self._found(relative, digest, row, "path")
 
-        if relative.casefold().endswith(PAIRED_AUDIO_SUFFIXES):
-            stem = os.path.splitext(source.name)[0]
-            if (source.parent / f"{stem}.acb").is_file() and (source.parent / f"{stem}.awb").is_file():
-                row = self.meta.lookup_suffix(source.name)
-                if row is not None:
-                    return Resolution(relative, digest, row, "audio-pair")
-            return Resolution(relative, digest, None, "not-in-metadata")
+        parts = relative.split("/")
+        if len(parts) > 1 and parts[0].lower() in STRIPPED_PREFIXES:
+            row = self.meta.lookup("/".join(parts[1:]))
+            if row is not None:
+                return self._found(relative, digest, row, "prefix")
+
+        if file_name.lower().endswith(AUDIO_VIDEO_SUFFIXES):
+            row = self.meta.lookup_suffix(file_name)
+            if row is not None:
+                return self._found(relative, digest, row, "audio-name")
 
         if data.startswith(UNITY_MAGIC):
             name = self.names.get(digest)
@@ -272,7 +412,7 @@ class AssetResolver:
             if name:
                 row = self.meta.lookup(name)
                 if row is not None:
-                    return Resolution(relative, digest, row, "bundle-name", name)
+                    return self._found(relative, digest, row, "bundle-name")
                 return Resolution(relative, digest, None, "not-in-metadata", name)
         return Resolution(relative, digest, None, "not-in-metadata")
 
