@@ -5,7 +5,7 @@ import tkinter as tk
 import webbrowser
 from collections import OrderedDict
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 from typing import Callable, Iterable
 
 from .discovery import ModCandidate, default_search_roots, scan_mod_candidates
@@ -629,6 +629,22 @@ class DiscoverActions:
         selected = self.discover.local_tree.selection()
         return self.local_candidates.get(selected[0]) if selected else None
 
+    def selected_local_candidates(self) -> list:
+        """Every highlighted candidate, in list order."""
+
+        tree = self.discover.local_tree
+        selected = set(tree.selection())
+        return [
+            self.local_candidates[item]
+            for item in tree.get_children()
+            if item in selected and item in self.local_candidates
+        ]
+
+    def _import_candidate(self, candidate, reference: bool):
+        if candidate.kind == "archive":
+            return self.store.import_archive(candidate.path, reference=reference)
+        return self.store.import_folder(candidate.path, reference=reference)
+
     def open_local_candidate(self):
         candidate = self.selected_local_candidate()
         if candidate:
@@ -637,10 +653,53 @@ class DiscoverActions:
             )
 
     def import_local_candidate(self):
-        candidate = self.selected_local_candidate()
-        if candidate:
-            self._import(
-                lambda: self.store.import_archive(candidate.path)
-                if candidate.kind == "archive"
-                else self.store.import_folder(candidate.path)
+        candidates = self.selected_local_candidates()
+        if not candidates:
+            return
+        # Same rule as the Library import buttons: keep local files where
+        # they are unless the user turned that off.
+        reference = self._reference_local_imports()
+        if len(candidates) == 1:
+            candidate = candidates[0]
+            self._import(lambda: self._import_candidate(candidate, reference))
+            return
+
+        def import_all():
+            imported, failed = [], []
+            for candidate in candidates:
+                try:
+                    imported.append(self._import_candidate(candidate, reference))
+                except Exception as exc:  # keep going; report at the end
+                    failed.append((candidate.name, str(exc)))
+            return imported, failed
+
+        self._run_task(
+            f"Importing {len(candidates)} mods...",
+            import_all,
+            self._finish_import_many,
+        )
+
+    def _finish_import_many(self, result):
+        imported, failed = result
+        self.refresh()
+        tree = self.library.tree
+        ids = [record.id for record in imported if tree.exists(record.id)]
+        if ids:
+            tree.selection_set(ids)
+            tree.see(ids[0])
+            self.show_selected_mod()
+        summary = f"Imported {len(imported)} mod(s)"
+        if failed:
+            summary += f"; {len(failed)} failed"
+        self.status.set(summary)
+        if failed:
+            details = "\n\n".join(f"{name}:\n{error}" for name, error in failed[:10])
+            if len(failed) > 10:
+                details += f"\n\n...and {len(failed) - 10} more"
+            messagebox.showwarning(
+                "Some mods were not imported",
+                details,
+                parent=self.root,
             )
+        if imported:
+            self.show_page("library")

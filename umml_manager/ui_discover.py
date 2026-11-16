@@ -225,6 +225,7 @@ class DiscoverPage(ttk.Frame):
             frame,
             columns=("kind", "confidence", "reason", "path"),
             show="tree headings",
+            selectmode="extended",  # Ctrl/Shift-click several, then Import selected
         )
         for col, title, width in (
             ("#0", "Candidate", 220),
